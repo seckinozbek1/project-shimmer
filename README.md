@@ -63,15 +63,15 @@ sovereignty) and is the only law that does.
 
 ### Seven seed laws
 
-| Id      | Law                                                                 |
-|---------|---------------------------------------------------------------------|
-| LAW-0   | Operator sovereignty                                                |
-| LAW-I   | Do no harm to the source                                            |
-| LAW-II  | Cite every claim                                                    |
-| LAW-III | Audit across families — drafter and auditor come from different model families |
-| LAW-IV  | Protect what is private (outranks LAW-0)                            |
-| LAW-V   | Append-only history                                                 |
-| LAW-VI  | Escalate uncertainty rather than fabricate                          |
+| Id      | Title                                |
+|---------|--------------------------------------|
+| LAW-0   | Operator sovereignty                 |
+| LAW-I   | Do no harm to the source             |
+| LAW-II  | Know your bounds                     |
+| LAW-III | No self-audit                        |
+| LAW-IV  | Protect what is private              |
+| LAW-V   | Remember before you act              |
+| LAW-VI  | Structure is earned, not assumed     |
 
 ### Message bus: formal properties
 
