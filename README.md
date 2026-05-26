@@ -3,10 +3,11 @@
 # Project Shimmer
 
 A constitutional multi-agent system for reviewing regulated documents.
-Fourteen specialized LLM agents, a seven-law written constitution, an
-append-only message bus, cross-family verification, precision REF-*
-references, and tracked-changes amendments cited back to convention
-rules. The operator owns every escalation.
+Fourteen specialized LLM agents governed by a 27-Part constitutional
+specification founded on seven seed laws, an append-only message bus,
+cross-family verification, precision REF-* references, and
+tracked-changes amendments cited back to convention rules. The
+operator owns every escalation.
 
 Author: Seckin Ozbek.
 
@@ -43,7 +44,10 @@ those invariants statistically over many failed runs. For domains
 where a missing citation is a defect, a statistical guarantee is the
 wrong kind of guarantee.
 
-The seven seed laws are the controller. The agents are the bicycle.
+The constitution is the controller — seven seed laws at the
+foundation, expanded across 27 Parts that specify agents, governance,
+conventions, corpus handling, semantic retrieval, and absence
+detection. The agents are the bicycle.
 
 ---
 
@@ -51,17 +55,24 @@ The seven seed laws are the controller. The agents are the bicycle.
 
 ### Four governance layers
 
-| Layer | Name              | Source                            |
-|-------|-------------------|-----------------------------------|
-| 1     | Constitution      | seven seed laws, ratified amendments |
-| 2     | Task-force laws   | operator-ratified amendments      |
-| 3     | Precedents        | accepted past decisions           |
-| 4     | Conventions       | rules in `input/conventions/*.md` |
+| Layer | Name              | Source                                                                |
+|-------|-------------------|-----------------------------------------------------------------------|
+| 1     | Constitution      | 27-Part specification (`genesis.md`), founded on seven seed laws (Part I) |
+| 2     | Task-force laws   | operator-ratified amendments                                          |
+| 3     | Precedents        | accepted past decisions                                               |
+| 4     | Conventions       | rules in `input/conventions/*.md`                                     |
 
 Higher layers dominate. LAW-IV (privacy) outranks LAW-0 (operator
 sovereignty) and is the only law that does.
 
-### Seven seed laws
+### The foundation layer: seven seed laws (Part I)
+
+Part I of `genesis.md` establishes the seven seed laws — the
+minimum-viable governance that ships with every Shimmer project.
+Everything below is the table; everything above the seven laws in
+the rule hierarchy (task-force laws, precedents, conventions) and
+everything beyond them in the constitutional specification (Parts
+II–XXVII) is built on this foundation.
 
 | Id      | Title                                |
 |---------|--------------------------------------|
