@@ -1,0 +1,136 @@
+{
+  "version": "1.1.0",
+  "created": "2026-05-26",
+  "description": "Structured output schemas per agent. Per Part XVIII Section B, agents in the convention review workflow MUST include ref_ids; for other agents it remains optional. v1.1.0 adds AMENDMENT_DRAFTER.",
+  "contracts": {
+    "PROCESSOR": {
+      "fields": {
+        "document_id": "string", "section_id": "string", "draft_text": "string",
+        "extraction_method": "string", "claims_referenced": "array of claim_id strings",
+        "confidence": "float 0-1", "open_questions": "array of strings",
+        "ref_ids": "array of REF-* strings (optional)"
+      },
+      "required": ["document_id", "section_id", "draft_text", "extraction_method"]
+    },
+    "VERIFIER": {
+      "fields": {
+        "paragraph": "int", "finding": "MATCH | DIVERGENCE | ADDITION | OMISSION",
+        "original": "string", "output": "string",
+        "severity": "low | medium | high", "reasoning": "string",
+        "ref_ids": "array of REF-* strings (required in convention review)"
+      },
+      "required": ["paragraph", "finding", "severity", "reasoning"]
+    },
+    "FACT_CHECKER": {
+      "fields": {
+        "claim_id": "string", "original_text": "string",
+        "verdict": "CONFIRMED | DISPUTED | OUTDATED | UNVERIFIABLE",
+        "evidence": "string", "source_url": "string | null",
+        "confidence": "float 0-1", "search_method": "string",
+        "ref_ids": "array of REF-* strings (required in convention review)"
+      },
+      "required": ["claim_id", "original_text", "verdict", "confidence", "search_method"]
+    },
+    "PRACTICE_AUDITOR": {
+      "fields": {
+        "procedure_id": "string", "procedure_text": "string",
+        "verdict": "ALIGNED | ANTI_PATTERN | OUTDATED | NO_REFERENCE_AVAILABLE | COMPLIANT | VIOLATION | AMBIGUOUS",
+        "reference_source": "string | null", "reference_url": "string | null",
+        "recommendation": "string", "confidence": "float 0-1",
+        "conv_id": "CONV-* string (required in convention review)",
+        "ref_ids": "array of REF-* strings (required in convention review)",
+        "severity": "required | recommended | advisory"
+      },
+      "required": ["procedure_id", "procedure_text", "verdict", "confidence"],
+      "directives": [
+        "After completing your review of what the document contains, consult the structural inventory provided in your context package (work_payload.structural_inventory). For any element present in more than half the corpus documents but absent from this operational document, produce an additional finding with verdict='VIOLATION', action='flag', location='document-level', and cite the corpus documents where the element appears via ref_ids. The finding's recommendation should explain what structural element is missing and which corpus documents establish it as standard practice."
+      ]
+    },
+    "LEGAL_ANALYST": {
+      "fields": {
+        "claim_id": "string", "legal_basis": "string",
+        "precedent_cited": "array of strings", "regulatory_framework": "array of strings",
+        "verdict": "GROUNDED | THIN | UNSUPPORTED | OUT_OF_SCOPE", "reasoning": "string",
+        "ref_ids": "array of REF-* strings (optional)"
+      },
+      "required": ["claim_id", "verdict", "reasoning"],
+      "directives": [
+        "After completing your review of what the document contains, consult the structural inventory provided in your context package (work_payload.structural_inventory). For any legal mechanism (redress, conformity assessment, post-market monitoring, definitions, prohibitions, transparency obligations) present in more than half the corpus documents but absent from this operational document, produce an additional finding with verdict='THIN' or 'UNSUPPORTED' as appropriate, and explain in the reasoning that the absence is the issue. Cite the corpus documents where the mechanism appears via ref_ids."
+      ]
+    },
+    "STYLE_GUARDIAN": {
+      "fields": {
+        "segment_id": "string", "register_target": "string", "register_observed": "string",
+        "deviation": "NONE | MINOR | MAJOR", "suggested_edit": "string | null",
+        "rationale": "string",
+        "conv_id": "CONV-* string (required in convention review)",
+        "ref_ids": "array of REF-* strings (required in convention review)"
+      },
+      "required": ["segment_id", "register_target", "register_observed", "deviation"]
+    },
+    "ARCHIVIST": {
+      "fields": {
+        "document_id": "string", "title": "string | null", "date": "string | null",
+        "chronology_position": "int",
+        "reference_chain": "array of document_id strings",
+        "index_tags": "array of strings",
+        "structural_inventory": "array of {element: string, description: string, document_count: int, document_names: array of strings} — corpus-level only, produced when reviewing the full context digest per genesis Part XXVII"
+      },
+      "required": ["document_id", "chronology_position"],
+      "max_output_tokens": 4096,
+      "directives": [
+        "When your work_payload.task == 'corpus_level_analysis', additionally produce a structural_inventory: a list of structural elements, mechanisms, safeguards, and provisions that appear across the context corpus. For each element, count how many documents contain it and list which documents. Focus on governance-relevant structures: risk classification, conformity assessment, post-market monitoring, redress mechanisms, transparency obligations, human oversight, prohibited practices, environmental provisions, data flow provisions, definitions sections. Do not limit to this list — include any structural pattern you observe in multiple documents. Indexing structural patterns across documents is a form of indexing (within your DOES set), not analysis."
+      ]
+    },
+    "INST_FINDER": {
+      "fields": {
+        "topic": "string",
+        "institutions": "array of {name, role, evidence_in_text}",
+        "registry_addition": "boolean", "confidence": "float 0-1"
+      },
+      "required": ["topic", "institutions", "confidence"]
+    },
+    "CITATION_RESOLVER": {
+      "fields": {
+        "source_document": "string", "target_document": "string | null",
+        "citation_form": "string", "resolved": "boolean", "graph_edge": "object"
+      },
+      "required": ["source_document", "citation_form", "resolved"]
+    },
+    "SPEECH_ACT_TAGGER": {
+      "fields": {
+        "utterance_id": "string", "text": "string",
+        "speech_act": "string", "force": "string", "confidence": "float 0-1"
+      },
+      "required": ["utterance_id", "speech_act", "confidence"]
+    },
+    "REDACT_CLERK": {
+      "fields": {"segment_id": "string", "tier": "T1 | T2", "redactions": "array of {span, category, replacement}", "method": "string"},
+      "required": ["segment_id", "tier", "redactions"]
+    },
+    "REDACT_AUTHORITY": {
+      "fields": {"segment_id": "string", "tier": "T3 | T4", "approved": "boolean", "adversarial_test_passed": "boolean", "issues": "array of strings"},
+      "required": ["segment_id", "tier", "approved", "adversarial_test_passed"]
+    },
+    "REDACT_GATE": {
+      "fields": {"deliverable_id": "string", "tier": "T5", "pass": "boolean", "reason": "string"},
+      "required": ["deliverable_id", "tier", "pass", "reason"]
+    },
+    "AMENDMENT_DRAFTER": {
+      "fields": {
+        "document_id": "string",
+        "amendments": "array of amendment objects",
+        "amendment.location": "REF-* of the flagged passage",
+        "amendment.convention_ref": "CONV-* that triggers this",
+        "amendment.context_refs": "array of REF-* from context corpus supporting the amendment",
+        "amendment.finding_type": "terminology | red_flag | rephrasing | citation_style | structural | borrowing | value_alignment | factual | procedural",
+        "amendment.original_text": "string — the exact text being amended",
+        "amendment.proposed_text": "string | null — proposed replacement (null if flag-only)",
+        "amendment.action": "flag | rephrase | reject | annotate",
+        "amendment.comment": "string — must contain >=1 CONV-* and >=1 REF-*",
+        "amendment.severity": "required | recommended | advisory"
+      },
+      "required": ["document_id", "amendments"]
+    }
+  }
+}

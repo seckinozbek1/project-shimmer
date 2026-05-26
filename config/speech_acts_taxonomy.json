@@ -1,0 +1,122 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-05-26T15:35:44.282116+00:00",
+  "source": "adaptive_spawn",
+  "speech_acts": [
+    {
+      "name": "decide",
+      "pattern": "\\b(decides?|decided)\\b",
+      "evidence_count": 80,
+      "examples": [
+        "decide",
+        "decides",
+        "decided"
+      ]
+    },
+    {
+      "name": "request",
+      "pattern": "\\b(requests?|requested|calls upon|urges?|invites?)\\b",
+      "evidence_count": 418,
+      "examples": [
+        "request",
+        "invite",
+        "urge",
+        "calls upon",
+        "requested"
+      ]
+    },
+    {
+      "name": "affirm",
+      "pattern": "\\b(affirms?|reaffirms?|recognizes?|acknowledges?)\\b",
+      "evidence_count": 100,
+      "examples": [
+        "acknowledge",
+        "affirms",
+        "recognizes",
+        "reaffirms",
+        "recognize"
+      ]
+    },
+    {
+      "name": "condemn",
+      "pattern": "\\b(condemns?|denounces?|deplores?)\\b",
+      "evidence_count": 8,
+      "examples": [
+        "denounce",
+        "condemn",
+        "deplore"
+      ]
+    },
+    {
+      "name": "commit",
+      "pattern": "\\b(commits? to|undertakes?|pledges?)\\b",
+      "evidence_count": 73,
+      "examples": [
+        "undertake",
+        "commit to",
+        "undertakes",
+        "pledge",
+        "pledges"
+      ]
+    },
+    {
+      "name": "authorize",
+      "pattern": "\\b(authorizes?|empowers?|mandates?)\\b",
+      "evidence_count": 121,
+      "examples": [
+        "empower",
+        "mandate",
+        "empowers",
+        "authorizes",
+        "authorize"
+      ]
+    },
+    {
+      "name": "declare",
+      "pattern": "\\b(declares?|proclaims?|announces?)\\b",
+      "evidence_count": 20,
+      "examples": [
+        "declare",
+        "announces",
+        "declares",
+        "announce"
+      ]
+    },
+    {
+      "name": "note",
+      "pattern": "\\b(notes?|observes?|takes note of)\\b",
+      "evidence_count": 202,
+      "examples": [
+        "note",
+        "observe",
+        "notes",
+        "takes note of",
+        "observes"
+      ]
+    },
+    {
+      "name": "require",
+      "pattern": "\\b(require[sd]?|must|shall)\\b",
+      "evidence_count": 2644,
+      "examples": [
+        "must",
+        "required",
+        "require",
+        "requires",
+        "shall"
+      ]
+    },
+    {
+      "name": "recommend",
+      "pattern": "\\b(recommend(s|ed|ation)?|suggest(s|ed)?)\\b",
+      "evidence_count": 558,
+      "examples": [
+        "suggests  s",
+        "recommendation ation ",
+        "recommend  ",
+        "recommended ed ",
+        "recommends s "
+      ]
+    }
+  ]
+}

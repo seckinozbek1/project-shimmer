@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0.0",
+  "description": "Cutoff for the EU AI Act alignment scenario: only the synthetic draft resolution (dated 2026) crosses the cutoff. All other documents in input/context/ are reference material.",
+  "cutoff_type": "date",
+  "cutoff_date": "2025-06-01",
+  "cutoff_document_number": null,
+  "scope_note": "Documents dated 2025-06-01 or later become operational and receive the full convention review. Earlier documents stay context."
+}

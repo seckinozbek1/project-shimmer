@@ -1,0 +1,99 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-05-26T16:19:24.513919+00:00",
+  "source_files": [
+    "ai_ethics_review_standards.md"
+  ],
+  "conventions": [
+    {
+      "id": "CONV-001",
+      "category": "identity",
+      "rule": "This review is conducted from the perspective of a Brussels-based AI governance consultancy specializing in EU regulatory alignment assessments.",
+      "source_file": "ai_ethics_review_standards.md",
+      "source_location": "line 4",
+      "severity": "advisory",
+      "action": "flag"
+    },
+    {
+      "id": "CONV-002",
+      "category": "identity",
+      "rule": "The consultancy's clients are institutions preparing policy instruments for submission in contexts where EU regulatory compatibility matters.",
+      "source_file": "ai_ethics_review_standards.md",
+      "source_location": "line 5",
+      "severity": "advisory",
+      "action": "flag"
+    },
+    {
+      "id": "CONV-003",
+      "category": "identity",
+      "rule": "The primary operative framework is the EU AI Act (Regulation (EU) 2024/1689), present in the context corpus. This document defines the terminology standard, the risk classification benchmark, the structural expectations, and the value hierarchy against which all reviewed documents are assessed.",
+      "source_file": "ai_ethics_review_standards.md",
+      "source_location": "line 6",
+      "severity": "advisory",
+      "action": "flag"
+    },
+    {
+      "id": "CONV-004",
+      "category": "identity",
+      "rule": "When the reviewed document's approach diverges from the primary framework's philosophy, the divergence is noted as a finding, not as an error. The consultancy recognizes that other jurisdictions may legitimately adopt different regulatory philosophies. The task is to map the gap, not to judge the choice.",
+      "source_file": "ai_ethics_review_standards.md",
+      "source_location": "line 7",
+      "severity": "advisory",
+      "action": "flag"
+    },
+    {
+      "id": "CONV-005",
+      "category": "scope",
+      "rule": "The context corpus represents the current global landscape of AI governance as known to the consultancy.",
+      "source_file": "ai_ethics_review_standards.md",
+      "source_location": "line 10",
+      "severity": "advisory",
+      "action": "flag"
+    },
+    {
+      "id": "CONV-006",
+      "category": "scope",
+      "rule": "The reviewed document is assessed against both the primary operative framework and the broader patterns visible across the context corpus.",
+      "source_file": "ai_ethics_review_standards.md",
+      "source_location": "line 11",
+      "severity": "advisory",
+      "action": "flag"
+    },
+    {
+      "id": "CONV-007",
+      "category": "scope",
+      "rule": "Where the context corpus shows convergence across multiple jurisdictions on a principle or mechanism (e.g., transparency, risk classification, human oversight), absence of that element in the reviewed document is a stronger finding than divergence from a single framework.",
+      "source_file": "ai_ethics_review_standards.md",
+      "source_location": "line 12",
+      "severity": "advisory",
+      "action": "flag"
+    },
+    {
+      "id": "CONV-008",
+      "category": "citation_style",
+      "rule": "When reviewing a provision that addresses a specific policy area, the reviewing agents should search for whether the jurisdiction of the primary operative framework has published additional guidance, guidelines, or codes of practice on that topic beyond what is in the context corpus. If found, cite the source URL in the finding and mark as [WEB-REF].",
+      "source_file": "ai_ethics_review_standards.md",
+      "source_location": "line 15",
+      "severity": "recommended",
+      "action": "flag"
+    },
+    {
+      "id": "CONV-009",
+      "category": "citation_style",
+      "rule": "When a provision references an international framework not present in the context corpus, the agents should verify the reference exists via web search and note the correct citation.",
+      "source_file": "ai_ethics_review_standards.md",
+      "source_location": "line 16",
+      "severity": "recommended",
+      "action": "annotate"
+    },
+    {
+      "id": "CONV-010",
+      "category": "citation_style",
+      "rule": "External references discovered via web search must be cited with full URL, document title, issuing body, and year.",
+      "source_file": "ai_ethics_review_standards.md",
+      "source_location": "line 17",
+      "severity": "required",
+      "action": "flag"
+    }
+  ]
+}

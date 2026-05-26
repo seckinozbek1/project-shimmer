@@ -1,0 +1,6 @@
+{
+  "schema_version": "1.0.0",
+  "tier": 3,
+  "description": "Cross-project global memory. Same record shape as tier 2.",
+  "entries": {}
+}

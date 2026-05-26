@@ -1,0 +1,144 @@
+"""Reference builder (genesis Part XVIII Section B).
+
+Splits documents into paragraphs and sentences, assigns stable REF-* IDs,
+and maintains the index across pipeline phases.
+
+ref_id pattern: REF-XXXX, monotonically increasing per index instance.
+The index is persisted to output/audit/reference_index.json and can be
+extended idempotently across pipeline phases.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import threading
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+_PARA_RE = re.compile(r"\n\s*\n")
+_SENT_RE = re.compile(r"(?<=[\.!?])\s+(?=[A-Z0-9])")
+
+
+def _now(): return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class ReferenceEntry:
+    ref_id: str
+    input_type: str  # context | operational | convention
+    document_id: str
+    document_name: str
+    location: dict
+    text_excerpt: str
+    cited_by: list = field(default_factory=list)
+    first_indexed: str = field(default_factory=_now)
+
+    def as_dict(self):
+        return {"ref_id": self.ref_id, "input_type": self.input_type,
+                "document_id": self.document_id, "document_name": self.document_name,
+                "location": self.location, "text_excerpt": self.text_excerpt,
+                "cited_by": self.cited_by, "first_indexed": self.first_indexed}
+
+
+@dataclass
+class ReferenceIndex:
+    project_root: Path
+    entries: list = field(default_factory=list)
+    by_id: dict = field(default_factory=dict)
+    _lock: threading.RLock = field(default_factory=threading.RLock)
+    _seq: int = 0
+
+    @classmethod
+    def open(cls, project_root: Path) -> "ReferenceIndex":
+        idx = cls(project_root=project_root)
+        path = cls._path_for(project_root)
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                for e in data.get("entries", []):
+                    entry = ReferenceEntry(
+                        ref_id=e["ref_id"], input_type=e["input_type"],
+                        document_id=e["document_id"], document_name=e["document_name"],
+                        location=e.get("location", {}), text_excerpt=e.get("text_excerpt", ""),
+                        cited_by=list(e.get("cited_by", [])),
+                        first_indexed=e.get("first_indexed", _now()),
+                    )
+                    idx.entries.append(entry)
+                    idx.by_id[entry.ref_id] = entry
+                idx._seq = max((int(e.ref_id.split("-")[1]) for e in idx.entries
+                                if e.ref_id.startswith("REF-")), default=0)
+            except (json.JSONDecodeError, KeyError, ValueError):
+                pass
+        return idx
+
+    @staticmethod
+    def _path_for(project_root):
+        return project_root / "output" / "audit" / "reference_index.json"
+
+    def save(self) -> Path:
+        with self._lock:
+            path = self._path_for(self.project_root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {"schema_version": "1.0.0", "generated_at": _now(),
+                    "entries": [e.as_dict() for e in self.entries]}
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+            return path
+
+    def _next_id(self):
+        self._seq += 1
+        return f"REF-{self._seq:04d}"
+
+    def add(self, *, input_type, document_id, document_name, location, text_excerpt) -> ReferenceEntry:
+        with self._lock:
+            entry = ReferenceEntry(
+                ref_id=self._next_id(), input_type=input_type,
+                document_id=document_id, document_name=document_name,
+                location=location, text_excerpt=text_excerpt[:200],
+            )
+            self.entries.append(entry); self.by_id[entry.ref_id] = entry
+            return entry
+
+    def cite(self, ref_id, agent_name):
+        with self._lock:
+            entry = self.by_id.get(ref_id)
+            if entry and agent_name not in entry.cited_by:
+                entry.cited_by.append(agent_name)
+
+    def find_by_document(self, document_id):
+        return [e for e in self.entries if e.document_id == document_id]
+
+    def index_document(self, *, input_type, document_id, document_name, text,
+                       max_paragraphs=200, max_chars_per_excerpt=200) -> list:
+        """Split text into paragraphs (and sentences within each paragraph) and add
+        each paragraph as a reference entry."""
+        out = []
+        if not text:
+            return out
+        paras = [p.strip() for p in _PARA_RE.split(text) if p.strip()]
+        page_estimate = 1
+        running_chars = 0
+        chars_per_page = 3000
+        for p_idx, para in enumerate(paras[:max_paragraphs], start=1):
+            sentences = [s.strip() for s in _SENT_RE.split(para) if s.strip()]
+            location = {
+                "page": page_estimate, "paragraph": p_idx,
+                "sentence": 1 if sentences else 0,
+                "char_start": running_chars,
+                "char_end": running_chars + len(para),
+            }
+            entry = self.add(
+                input_type=input_type, document_id=document_id,
+                document_name=document_name, location=location,
+                text_excerpt=para[:max_chars_per_excerpt],
+            )
+            out.append(entry)
+            running_chars += len(para) + 2
+            if running_chars > page_estimate * chars_per_page:
+                page_estimate += 1
+        return out

@@ -1,0 +1,86 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-05-26T15:35:41.324115+00:00",
+  "source": "adaptive_spawn",
+  "rules": [
+    {
+      "name": "UN resolution symbol",
+      "pattern": "\\b[ASE]/RES/\\d+(?:/\\d+)?(?:\\(\\d{4}\\))?\\b",
+      "sample_count": 9,
+      "examples": [
+        "A/RES/70/1",
+        "A/RES/78/265"
+      ]
+    },
+    {
+      "name": "UN document symbol",
+      "pattern": "\\b[ASE]/\\d+/\\d+\\b",
+      "sample_count": 4,
+      "examples": [
+        "A/74/821",
+        "A/60/687",
+        "A/66/53"
+      ]
+    },
+    {
+      "name": "standard reference",
+      "pattern": "\\b(?:ISO|IEC|IEEE|RFC|ANSI|ASTM)[\\s/\\-]?\\d+(?:[-:]\\d+)*\\b",
+      "sample_count": 29,
+      "examples": [
+        "ISO 2700",
+        "IEC 42001:2023",
+        "IEC 23894:2023",
+        "IEC 38507:2022",
+        "ISO 26000"
+      ]
+    },
+    {
+      "name": "legal section",
+      "pattern": "\\b(?:Article|Section|Chapter|Clause|Annex|Protocol)\\s+[A-Z0-9]+(?:\\.[A-Z0-9]+)*\\b",
+      "sample_count": 1987,
+      "examples": [
+        "Annex A",
+        "Annex B",
+        "section of",
+        "section is",
+        "section covers"
+      ]
+    },
+    {
+      "name": "treaty name",
+      "pattern": "\\b(?:Convention|Treaty|Charter|Declaration|Pact)\\s+(?:of|on)\\s+[A-Z][\\w\\s]+",
+      "sample_count": 98,
+      "examples": [
+        "Convention on Cybersecurity and Personal Data Protection ",
+        "Charter on Human and Peoples",
+        "Declaration on Human Rights and related \ninstruments of international human rights law",
+        "Declaration on AI safety\nAgreed to by Australia",
+        "Convention on Artificial Intelligence and Human \nRights"
+      ]
+    },
+    {
+      "name": "EU regulation",
+      "pattern": "\\bRegulation\\s*\\(EU\\)\\s*\\d+/\\d+\\b",
+      "sample_count": 148,
+      "examples": [
+        "Regulation (EU) \n2019/1020",
+        "Regulation (EU) 2019/1020",
+        "Regulation (EU) 2016/679",
+        "Regulation (EU) 2018/1725",
+        "Regulation (EU) 2022/2065"
+      ]
+    },
+    {
+      "name": "US executive order",
+      "pattern": "\\bExecutive Order\\s*\\d+\\b",
+      "sample_count": 15,
+      "examples": [
+        "Executive Order 13859",
+        "Executive Order 14110",
+        "Executive Order 14074",
+        "Executive Order 13984",
+        "Executive Order 12333"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+#!/bin/sh
+py -3.9 scripts/guard_secrets.py
+if [ $? -ne 0 ]; then
+    echo "COMMIT BLOCKED: potential secrets detected. Review the output above."
+    exit 1
+fi
