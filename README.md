@@ -433,11 +433,12 @@ statement:
 > continues to pass, then domain knowledge does not reside in
 > framework code.
 
-The test has been run across two domains so far: AI ethics in
-Pakistani law and EU AI Act alignment. Both produced the same six-file
-deliverable shape (`*__amendments.docx/json/md`,
-`*__deliverable.md`, `*__context_summary.md`, `*__operative_summary.md`),
-and check 22 passed in each. The contrapositive — a code change that
+The test has been run cleanly on one domain so far: EU AI Act
+alignment (with a prior development iteration used for architecture
+debugging). The EU run produced the six-file deliverable shape
+(`*__amendments.docx/json/md`, `*__deliverable.md`,
+`*__context_summary.md`, `*__operative_summary.md`), and check 22
+passed. The contrapositive — a code change that
 leaks domain-specific vocabulary — would fail check 22 immediately.
 The verify gate is therefore the falsifier, not a passive log.
 
