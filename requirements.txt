@@ -1,0 +1,20 @@
+# Project Shimmer — external Python dependencies (py -3.9)
+# Versions pinned to those currently installed in the working environment.
+# Standard-library modules and in-repo modules under scripts/ are excluded.
+
+# PDF parsing (corpus intake, document dating)
+pypdf==6.10.2
+
+# Tracked-changes .docx generation (AMENDMENT_DRAFTER deliverables)
+python-docx==1.2.0
+lxml==6.1.0
+
+# Draft-resolution PDF builder
+fpdf2==2.8.4
+
+# Semantic retrieval layer (Part XXI embedding store)
+sentence-transformers==4.1.0
+numpy==2.0.2
+
+# Free web-search cascade (external reference discovery)
+ddgs==9.8.0

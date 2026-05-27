@@ -332,7 +332,7 @@ logs in `output/logs/`, contract-failure raw text in
 ## Domain switching
 
 ```bash
-py -3.9 scripts/pipeline.py --save-ontology eu_ai_act_alignment
+py -3.9 scripts/pipeline.py --save-ontology domain_b
 py -3.9 scripts/pipeline.py --reset-ontology
 
 # replace inputs
@@ -348,9 +348,9 @@ No code is edited. The `--reset-ontology` strips back to seed defaults;
 the new context corpus and conventions carry the domain. Three saved
 snapshots ship in `ontologies/`:
 
-- `ai_ethics_pakistan_law/`
-- `ai_ethics_pakistan_law_v2/` (corpus refresh)
-- `eu_ai_act_alignment/` (includes the embedding pickle)
+- `domain_a/`
+- `domain_a_v2/` (corpus refresh)
+- `domain_b/` (includes the embedding pickle)
 
 ---
 
@@ -559,35 +559,35 @@ intake.
 The spec at `genesis.md` is the source of truth. All code changes cite
 the Part they implement.
 
-| Part   | Topic                                                       |
-|--------|-------------------------------------------------------------|
-| I      | Identity and purpose                                        |
-| II     | Seven seed laws                                             |
-| III    | Constitution layers and precedents                          |
-| IV     | Agent registry and DOES / DOES_NOT contracts                |
-| V      | Message bus protocol                                        |
-| VI     | Intake and the three-input-type model                       |
-| VII    | Phase orchestration                                         |
-| VIII   | Verification and cross-family audit                         |
-| IX     | Redaction tiers (T1–T5)                                     |
-| X      | Deliverable assembly                                        |
-| XI     | Citation discipline                                         |
-| XII    | Directory structure                                         |
-| XIII   | Cost tracking and rate limits                               |
-| XIV    | Adaptive spawning                                           |
-| XV     | Verify-gate definition                                      |
-| XVI    | Non-goals and limitations                                   |
-| XVII   | DELTA mechanism                                             |
-| XVIII  | Convention review workflow and AMENDMENT_DRAFTER (Section D)|
-| XIX    | Corpus acquisition discipline                               |
-| XX     | External reference discovery                                |
-| XXI    | Semantic retrieval layer (per-provision queries)            |
-| XXII   | Universal review principles                                 |
-| XXIII  | *reserved*                                                  |
-| XXIV   | Absence detection                                           |
-| XXV    | Metadata hierarchy and date cascade                         |
-| XXVI   | Uncertain findings                                          |
-| XXVII  | Structural inventory                                        |
+| Part  | Topic                                                    |
+|-------|----------------------------------------------------------|
+| I     | The seven seed laws                                      |
+| II    | Agents                                                   |
+| III   | Hierarchy and governance                                 |
+| IV    | Constitution engine                                      |
+| V     | Emergent task forces                                     |
+| VI    | Message bus                                              |
+| VII   | Multi-model architecture                                 |
+| VIII  | Search stack                                             |
+| IX    | Memory layer                                             |
+| X     | Learning loop                                            |
+| XI    | Pipeline lifecycle                                       |
+| XII   | Directory structure                                      |
+| XIII  | Dependencies                                             |
+| XIV   | Build sequence                                           |
+| XV    | Verification checklist                                   |
+| XVI   | What this spec does not cover                            |
+| XVII  | Lessons carried forward                                  |
+| XVIII | Genesis amendment: convention-driven review architecture |
+| XIX   | Corpus acquisition discipline                            |
+| XX    | External reference discovery                             |
+| XXI   | Semantic retrieval layer                                 |
+| XXII  | Universal review principles                              |
+| XXIII | *reserved*                                               |
+| XXIV  | Absence detection                                        |
+| XXV   | Metadata hierarchy                                       |
+| XXVI  | Uncertain findings                                       |
+| XXVII | Structural inventory                                     |
 
 ---
 
