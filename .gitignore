@@ -15,6 +15,7 @@ output/**/*
 ontologies/*
 ontologies/**/*
 presentations/*
+!presentations/README.md
 *.pkl
 *.pyc
 __pycache__/

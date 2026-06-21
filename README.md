@@ -86,7 +86,7 @@ II–XXVII) is built on this foundation.
 
 ### Message bus: formal properties
 
-The bus is an append-only JSONL log at `output/bus/messages.jsonl`.
+The bus is an append-only JSONL log at `output/logs/agent_bus.jsonl`.
 Each entry:
 
 ```
@@ -323,7 +323,7 @@ py -3.9 scripts/verify_session1.py
 ```
 
 Outputs land under `output/`: six deliverables per reviewed document
-in `output/deliverables/`, the bus in `output/bus/messages.jsonl`,
+in `output/deliverables/`, the bus in `output/logs/agent_bus.jsonl`,
 logs in `output/logs/`, contract-failure raw text in
 `output/audit/contract_violations/`.
 
@@ -345,8 +345,11 @@ py -3.9 scripts/pipeline.py
 ```
 
 No code is edited. The `--reset-ontology` strips back to seed defaults;
-the new context corpus and conventions carry the domain. Three saved
-snapshots ship in `ontologies/`:
+the new context corpus and conventions carry the domain. The
+`ontologies/` directory is empty by default — no named snapshots ship
+with the repo. It is populated only by an explicit
+`--save-ontology NAME` action; a normal run never writes here. Once you
+save snapshots, they live under `ontologies/<name>/`, for example:
 
 - `domain_a/`
 - `domain_a_v2/` (corpus refresh)
@@ -536,10 +539,10 @@ project_shimmer/
 ├── ontologies/                      # saved domain snapshots
 ├── output/
 │   ├── deliverables/                # six artifacts per run
-│   ├── bus/messages.jsonl
+│   ├── logs/agent_bus.jsonl         # append-only message bus
 │   ├── logs/                        # cost, verify, run logs
 │   └── audit/contract_violations/
-├── presentations/                   # three Beamer decks
+├── presentations/                   # optional, manual: no decks ship
 ├── prompts/                         # per-agent prompt templates
 ├── reference/                       # static references
 └── scripts/
