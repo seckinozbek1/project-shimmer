@@ -35,7 +35,8 @@ if hasattr(sys.stdout, "reconfigure"):
 else:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-from agent_wrapper import AgentWrapper, load_api_keys
+from agent_wrapper import (AgentWrapper, load_api_keys, decode_items,
+                           current_items, make_envelope, is_envelope)
 import amendment_render
 from audit_synthesizer import AuditSynthesizer
 from convention_parser import parse_conventions, write_registry
@@ -426,7 +427,7 @@ async def phase_3_4_content_production(orch, keys, op_docs, ctx_docs,
     all_context_refs = [e.as_dict() for e in reference_index.entries
                         if e.input_type == "context"]
     convention_provisions = _convention_provision_texts(convention_registry)
-    structural_inventory = _extract_structural_inventory(results)
+    structural_inventory = _structural_inventory(results)
     if structural_inventory:
         print(f"[pipeline] structural inventory: {len(structural_inventory)} elements "
               f"identified by ARCHIVIST", file=sys.stderr, flush=True)
@@ -533,45 +534,40 @@ def _doc_refs_excerpt(reference_index, document_id):
     return [e.as_dict() for e in reference_index.find_by_document(document_id)[:30]]
 
 
-def _extract_structural_inventory(production_results: list) -> list[dict]:
-    """Per Part XXVI: pull the structural_inventory list out of the
-    ARCHIVIST's corpus-level output, if present. Returns [] when missing
-    so callers can pass it through without conditional handling."""
-    for r in production_results:
-        if r.get("scope") != "corpus" or r.get("agent") != "ARCHIVIST":
-            continue
-        if not r.get("ok"):
-            continue
-        parsed = r.get("parsed")
-        if isinstance(parsed, dict):
-            inv = parsed.get("structural_inventory")
-            if isinstance(inv, list):
-                return inv
-        elif isinstance(parsed, list):
-            for item in parsed:
-                if isinstance(item, dict) and isinstance(item.get("structural_inventory"), list):
-                    return item["structural_inventory"]
-    return []
+def _items_for(results, agent, *, doc_id=None, scope=None):
+    """THE single results-level adapter over the canonical decoder (INFRA-037).
 
-
-# ---------- phase 6: synthesis ---------------------------------------------------------------
-
-def _flatten(results, agent):
+    Decode every matching agent result's wrapper (body.payload) into its CURRENT
+    items (highest revision per item_id) via agent_wrapper.decode_items, and
+    concatenate. Replaces the three former normalizers (_filter_doc, _flatten,
+    _extract_structural_inventory) — there is no other reader of agent items."""
     out = []
     for r in results:
         if r.get("agent") != agent or not r.get("ok"):
             continue
-        parsed = r.get("parsed")
-        if isinstance(parsed, list):
-            out.extend(p for p in parsed if isinstance(p, dict))
-        elif isinstance(parsed, dict):
-            out.append(parsed)
+        if doc_id is not None and r.get("doc_id") != doc_id:
+            continue
+        if scope is not None and r.get("scope") != scope:
+            continue
+        out.extend(decode_items(r.get("parsed")))
     return out
 
 
+def _structural_inventory(production_results: list) -> list[dict]:
+    """Per Part XXVI: ARCHIVIST's corpus-level inventory is now one item per
+    governance element (kind='inventory'); decode them via the canonical decoder."""
+    return [it for it in _items_for(production_results, "ARCHIVIST", scope="corpus")
+            if it.get("kind") == "inventory"]
+
+
+# ---------- phase 6: synthesis ---------------------------------------------------------------
+
+
 def _harvest_amendment_payloads_from_bus(orch) -> dict:
-    """Return {document_id: amendments_payload} for any AMENDMENT_DRAFTER
-    outputs already present on the bus, so phase 6 can skip re-running them."""
+    """Return {document_id: amendments_master} for any AMENDMENT_DRAFTER outputs
+    already on the bus, so phase 6 can skip re-running them. Reads the canonical
+    wrapper (INFRA-037) via the decoder and builds the INFRA-033 amendments MASTER
+    ({document_id, amendments:[items]}) — the master shape is unchanged."""
     out = {}
     for msg in orch.bus.read_all():
         if msg.get("sender") != "AMENDMENT_DRAFTER" or msg.get("type") != "INFORM":
@@ -580,8 +576,9 @@ def _harvest_amendment_payloads_from_bus(orch) -> dict:
         if body.get("event") != "AGENT_OUTPUT":
             continue
         payload = body.get("payload")
-        if isinstance(payload, dict) and payload.get("document_id"):
-            out[payload["document_id"]] = payload
+        if is_envelope(payload):
+            out[payload["doc_id"]] = {"document_id": payload["doc_id"],
+                                      "amendments": decode_items(payload)}
     return out
 
 
@@ -612,8 +609,8 @@ async def phase_6_synthesis(orch, keys, op_docs, production, audit, conv_review,
 
     for doc in op_docs:
         # Findings first — they determine the topical scope for context_summary too.
-        pa_findings = _filter_doc(conv_review, doc["id"], "PRACTICE_AUDITOR") or []
-        sg_findings = _filter_doc(conv_review, doc["id"], "STYLE_GUARDIAN") or []
+        pa_findings = _items_for(conv_review, "PRACTICE_AUDITOR", doc_id=doc["id"]) or []
+        sg_findings = _items_for(conv_review, "STYLE_GUARDIAN", doc_id=doc["id"]) or []
         findings = []
         categories_with_findings = set()
         for agent, raw_findings in (("PRACTICE_AUDITOR", pa_findings),
@@ -666,10 +663,10 @@ async def phase_6_synthesis(orch, keys, op_docs, production, audit, conv_review,
                 "task": "draft_amendments",
                 "document_id": doc["id"], "document_name": doc["name"],
                 "document_text": _truncate(doc["text"], 5000),
-                "findings_from_practice_auditor": _filter_doc(conv_review, doc["id"], "PRACTICE_AUDITOR"),
-                "findings_from_style_guardian":   _filter_doc(conv_review, doc["id"], "STYLE_GUARDIAN"),
-                "findings_from_verifier":         _filter_doc(audit,       doc["id"], "VERIFIER"),
-                "findings_from_fact_checker":     _filter_doc(audit,       doc["id"], "FACT_CHECKER"),
+                "findings_from_practice_auditor": _items_for(conv_review, "PRACTICE_AUDITOR", doc_id=doc["id"]),
+                "findings_from_style_guardian":   _items_for(conv_review, "STYLE_GUARDIAN", doc_id=doc["id"]),
+                "findings_from_verifier":         _items_for(audit, "VERIFIER", doc_id=doc["id"]),
+                "findings_from_fact_checker":     _items_for(audit, "FACT_CHECKER", doc_id=doc["id"]),
                 "convention_ids_in_scope": [c.get("id") for c in convention_registry.get("conventions", [])],
                 "reference_index_excerpt": _doc_refs_excerpt(reference_index, doc["id"]),
             }
@@ -688,22 +685,23 @@ async def phase_6_synthesis(orch, keys, op_docs, production, audit, conv_review,
                 convention_registry=convention_registry,
                 reference_index_excerpt=amendment_refs,
             )
-            # parsed is populated even on contract_violation (whatever JSON the
-            # model produced); don't discard the partial result — filter it.
-            amendments_payload = result.get("parsed")
-            if isinstance(amendments_payload, list):
-                amendments_payload = {"document_id": doc["id"], "amendments": amendments_payload}
-            if amendments_payload is None:
-                amendments_payload = {"document_id": doc["id"], "amendments": []}
+            # Decode the canonical wrapper (INFRA-037) into the INFRA-033 master.
+            # decode_items returns the CURRENT revision per item even on a
+            # best-effort (contract_violation) wrapper, so a partial result is not
+            # discarded — it is filtered below (phase-6 amendment salvage stays
+            # lenient; that asymmetry vs the strict LAW-IV redaction path is
+            # intentional).
+            parsed = result.get("parsed")
+            raw_amendments = decode_items(parsed) if is_envelope(parsed) else []
+            amendments_payload = {"document_id": doc["id"], "amendments": raw_amendments}
 
             if result.get("error") == "contract_violation":
-                raw_amendments = amendments_payload.get("amendments") or []
                 kept = []
                 for a in raw_amendments:
                     if not isinstance(a, dict):
                         continue
                     # location, convention_ref, comment are the three fields
-                    # that make a finding traceable. Drop anything missing them.
+                    # that make an amendment traceable. Drop anything missing them.
                     if (a.get("location") and a.get("convention_ref") and a.get("comment")):
                         kept.append(a)
                 dropped = len(raw_amendments) - len(kept)
@@ -837,26 +835,21 @@ def _post_redaction_block(orch, esc):
 
 
 def _redaction_result_block(orch, doc, result, *, stage, required_key):
-    """LAW-IV interim guard (hygiene): confirm a redaction agent's result is a
-    contract-valid dict carrying `required_key`. If it is, return None. If it is
-    NOT (run_task failed, or the output is not a dict, or the required field is
-    absent), emit the SAME strict LAW-IV BLOCK that REDACT_CLERK uses — reusing
+    """LAW-IV strict guard: confirm a redaction agent's result is a CONTRACT-VALID
+    canonical wrapper (INFRA-037) carrying at least one item with `required_key`.
+    If so, return None. Otherwise (run_task failed, the payload is not the wrapper,
+    or no item carries the field) emit the strict LAW-IV BLOCK — reusing
     build_redaction_escalation + _post_redaction_block (no second copy) — and
-    return the escalation dict so the caller can record state=BLOCKED and stop.
+    return the escalation dict so the caller records state=BLOCKED and stops.
 
     failure_kind distinguishes contract_violation (the agent RAN but returned an
-    unparseable / wrong-shape / field-missing result) from redactor_unavailable
-    (the agent did not run / backend unreachable).
-
-    INTERIM NOTE: this isinstance/has-key guard is the safe stopgap that stops a
-    non-dict (e.g. list) redactor output from either crashing the run
-    (`list.get(...)` -> AttributeError) or being silently coerced to
-    not-approved/failed (dropping proposed redactions so content could ship). The
-    canonical-envelope work (future operator-ratified DELTA) will REPLACE this
-    guard with the unified payload decoder; it is NOT the permanent design."""
+    unparseable / non-wrapper / field-missing result) from redactor_unavailable
+    (the agent did not run / backend unreachable). Reading goes through the one
+    canonical decoder; nothing bypasses it."""
     parsed = result.get("parsed")
-    if result.get("ok") and isinstance(parsed, dict) and required_key in parsed:
-        return None
+    if result.get("ok") and is_envelope(parsed):
+        if any(isinstance(it, dict) and required_key in it for it in decode_items(parsed)):
+            return None
     if not result.get("ok"):
         if result.get("error") == "contract_violation":
             miss = result.get("contract_missing") or []
@@ -867,7 +860,7 @@ def _redaction_result_block(orch, doc, result, *, stage, required_key):
         else:
             failure_kind = "redactor_unavailable"
     else:
-        # ran (ok=True) but the result is not a contract-valid dict with the field
+        # ran (ok=True) but the result is not a wrapper carrying the field
         failure_kind = "contract_violation_fields"
     esc = build_redaction_escalation(
         doc_id=doc["id"], document_name=doc["name"], stage=stage,
@@ -888,14 +881,15 @@ def _post_redaction(orch, doc_id, event, body):
 def _apply_redactions_to_master(master, redactions):
     """Apply approved redactions to the canonical amendments master IN PLACE, so
     every rendered format derives from the same redacted master (INFRA-033). Each
-    redaction is {"text": <substring>, "replacement": <opt, default [REDACTED]>}.
+    redaction is a canonical item (INFRA-037) carrying `span` (the exact text to
+    redact; `text` is also accepted) and optional `replacement` (default [REDACTED]).
     Returns the number of field substitutions made."""
     n = 0
     fields = ("original_text", "proposed_text", "comment")
     for red in redactions or []:
         if not isinstance(red, dict):
             continue
-        target = red.get("text")
+        target = red.get("span") or red.get("text")
         if not target:
             continue
         repl = red.get("replacement") or _REDACTION_PLACEHOLDER
@@ -961,22 +955,25 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
                            "Redact ONLY what warrants it; if nothing does, return an empty "
                            "redactions list.",
             channel="redaction", max_tokens=1024)
-        # LAW-IV strict gate: the redaction result must be CONFIRMED as a
-        # contract-valid redactions array, or the run BLOCKS and escalates — it is
-        # never silently skipped. Distinguish a backend that could not be reached
-        # (redactor_unavailable) from a model that ran but produced unparseable /
-        # non-conforming output (contract_violation). This strictness is
-        # LAW-IV-specific to redaction; phase-6 amendment salvage stays lenient.
+        # LAW-IV strict gate (INFRA-037): the clerk result must be a CONTRACT-VALID
+        # canonical wrapper, or the run BLOCKS and escalates — never silently
+        # skipped. A wrapper with items:[] is the valid 'nothing to redact' result.
+        # Distinguish a backend that could not be reached (redactor_unavailable)
+        # from a model that ran but produced unparseable / non-wrapper output
+        # (contract_violation). This strictness is LAW-IV-specific to redaction;
+        # phase-6 amendment salvage stays lenient.
         parsed = clerk_r.get("parsed")
-        if not clerk_r.get("ok"):
-            if clerk_r.get("error") == "contract_violation":
+        if not (clerk_r.get("ok") and is_envelope(parsed)):
+            if not clerk_r.get("ok") and clerk_r.get("error") == "contract_violation":
                 miss = clerk_r.get("contract_missing") or []
                 parse_failed = any(str(m).startswith("json parse failure")
                                    or str(m) == "no JSON object found in output" for m in miss)
                 failure_kind = ("contract_violation_parse" if parse_failed
                                 else "contract_violation_fields")
-            else:
+            elif not clerk_r.get("ok"):
                 failure_kind = "redactor_unavailable"
+            else:
+                failure_kind = "contract_violation_fields"  # ok but not a wrapper
             esc = build_redaction_escalation(
                 doc_id=doc["id"], document_name=doc["name"], stage="REDACT_CLERK",
                 failure_kind=failure_kind, raw_output_path=clerk_r.get("raw_text_path"))
@@ -984,18 +981,9 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
             summary[doc["id"]] = {"redacted": False, "state": "BLOCKED",
                                   "failure_kind": esc["failure_kind"], "escalation": esc}
             continue
-        # ok=True but the shape must still be a dict carrying a redactions ARRAY;
-        # a bare list / missing array cannot be confirmed clean -> BLOCK.
-        if not (isinstance(parsed, dict) and isinstance(parsed.get("redactions"), list)):
-            esc = build_redaction_escalation(
-                doc_id=doc["id"], document_name=doc["name"], stage="REDACT_CLERK",
-                failure_kind="contract_violation_fields",
-                raw_output_path=clerk_r.get("raw_text_path"))
-            _post_redaction_block(orch, esc)
-            summary[doc["id"]] = {"redacted": False, "state": "BLOCKED",
-                                  "failure_kind": esc["failure_kind"], "escalation": esc}
-            continue
-        redactions = parsed.get("redactions") or []
+        # Valid wrapper: the redaction items are kind='redaction' (decoded to the
+        # current revision per item_id). No items -> nothing to redact -> NONE.
+        redactions = [it for it in decode_items(parsed) if it.get("kind") == "redaction"]
         if not redactions:
             _post_redaction(orch, doc["id"], "REDACTION_NONE", {"screened_amendments": len(amendments)})
             summary[doc["id"]] = {"redacted": False, "state": "NONE", "redactions": 0}
@@ -1007,16 +995,14 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
                           "redactions": redactions},
             run_objectives="Approve only defensible redactions; run the adversarial test.",
             channel="redaction", max_tokens=1024)
-        # LAW-IV strict guard (interim, see _redaction_result_block): a non-dict /
-        # field-missing / failed result BLOCKs instead of crashing on .get() or
-        # silently coercing to not-approved.
         esc = _redaction_result_block(orch, doc, auth_r, stage="REDACT_AUTHORITY",
                                       required_key="approved")
         if esc is not None:
             summary[doc["id"]] = {"redacted": False, "state": "BLOCKED",
                                   "failure_kind": esc["failure_kind"], "escalation": esc}
             continue
-        approved = bool(auth_r["parsed"].get("approved"))
+        auth_items = [it for it in decode_items(auth_r["parsed"]) if "approved" in it]
+        approved = bool(auth_items) and all(bool(it.get("approved")) for it in auth_items)
 
         gate = _build_wrapper("REDACT_GATE", orch, keys)
         gate_r = gate.run_task(
@@ -1024,14 +1010,14 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
                           "redactions": redactions, "approved": approved},
             run_objectives="Final pass/fail on the redaction set.",
             channel="redaction", max_tokens=512)
-        # LAW-IV strict guard (interim): same as above for the final gate.
         esc = _redaction_result_block(orch, doc, gate_r, stage="REDACT_GATE",
                                       required_key="pass")
         if esc is not None:
             summary[doc["id"]] = {"redacted": False, "state": "BLOCKED",
                                   "failure_kind": esc["failure_kind"], "escalation": esc}
             continue
-        passed = bool(gate_r["parsed"].get("pass"))
+        gate_items = [it for it in decode_items(gate_r["parsed"]) if "pass" in it]
+        passed = bool(gate_items) and all(bool(it.get("pass")) for it in gate_items)
 
         if not (approved and passed):
             _post_redaction(orch, doc["id"], "REDACTION_NOT_APPLIED",
@@ -1052,20 +1038,6 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
                               "redactions": len(redactions), "substitutions": n}
     return summary
 
-
-def _filter_doc(results, doc_id, agent):
-    out = []
-    for r in results:
-        if r.get("doc_id") != doc_id or r.get("agent") != agent:
-            continue
-        if not r.get("ok"):
-            continue
-        parsed = r.get("parsed")
-        if isinstance(parsed, list):
-            out.extend(p for p in parsed if isinstance(p, dict))
-        elif isinstance(parsed, dict):
-            out.append(parsed)
-    return out
 
 
 def _category_for_conv(conv_id, registry):
@@ -1397,7 +1369,7 @@ def main(argv=None):
         # Part XXVI: pull the structural inventory ARCHIVIST produced during
         # the corpus-level phase so downstream phases can pass it to
         # PRACTICE_AUDITOR / LEGAL_ANALYST per Part XXIII's directive.
-        structural_inventory = _extract_structural_inventory(production)
+        structural_inventory = _structural_inventory(production)
         print(f"[pipeline] structural inventory elements: {len(structural_inventory)}",
               file=sys.stderr)
         print(f"[pipeline] phase 5: verification + fact-check", file=sys.stderr)
@@ -1426,9 +1398,9 @@ def main(argv=None):
         # Phase 7: audit synthesis + DELTA escalations
         synth = AuditSynthesizer(project_root=ROOT, bus=orch.bus, run_context=run_ctx)
         audit_summary = synth.synthesize(
-            verifier_findings=_flatten(audit, "VERIFIER"),
-            fact_check_findings=_flatten(audit, "FACT_CHECKER"),
-            practice_findings=_flatten(conv_review, "PRACTICE_AUDITOR"),
+            verifier_findings=_items_for(audit, "VERIFIER"),
+            fact_check_findings=_items_for(audit, "FACT_CHECKER"),
+            practice_findings=_items_for(conv_review, "PRACTICE_AUDITOR"),
         )
         print(f"[pipeline] audit synthesis: {len(audit_summary['findings'])} findings, "
               f"{len(audit_summary['delta_proposals'])} DELTAs", file=sys.stderr)

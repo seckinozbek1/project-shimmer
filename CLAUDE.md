@@ -23,7 +23,7 @@ Stored outside the repository. The relative path to the local `config.py` is in 
 - No domain-specific content in `scripts/`. Domain knowledge lives in `config/` (compiled conventions) and `durable/` (learned assets spawned from `input/context/`: `durable/learnings/` and `durable/reference/`).
 - Every convention review finding must cite at least one CONV-* and at least one REF-*.
 - English only for code, config file names, and folder names. No spaces or unicode in paths.
-- Every numbered DELTA is recorded as an amendment in `config/constitution.json` (`amendments[]`) — the canonical log. The README roster lists them all; no DELTA lives only in the roster.
+- Every numbered DELTA is recorded as an amendment in `config/constitution.json` (`amendments[]`) — that is the single canonical record. The README no longer carries a per-amendment roster (removed in the docs cleanup); no DELTA lives only in prose.
 
 ## First-time setup
 

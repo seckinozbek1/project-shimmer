@@ -397,6 +397,18 @@ All agents produce structured JSON, not free-form prose. This
 solves cross-model coherence. Store schemas in
 config/agent_contracts.json.
 
+**Canonical inter-agent envelope (INFRA-037).** Every agent's structured output
+is ONE wrapper, carried as `body.payload` inside the message bus's (unchanged)
+transport envelope: `{"agent": str, "doc_id": str, "items": [ flat item, ... ]}`.
+`items` is always a list (a singleton is a one-element list; nothing to report is
+`[]`; never a bare list or bare dict). Each item is FLAT — scalars or arrays of
+scalars only, no nested objects (structure is expressed as MORE items) — and
+carries the per-item core fields `ref`, `kind`, `confidence` (optional `verdict`),
+the flat citation array `ref_ids`, plus the runtime-stamped `item_id`/`revision`/
+`ts`. A consumer reads the current value of an item by selecting the highest
+`revision` per `item_id` (tie-break latest `ts`). The per-agent schemas below
+define each agent's flat item fields (carried inside `items[]`).
+
 ```json
 {
   "FACT_CHECKER": {
@@ -971,10 +983,12 @@ Before declaring complete, ALL must PASS:
 | 29 | CLAUDE.md points to this genesis file |
 | 30 | Full pipeline completes on a test document without crash |
 
-The implemented gate (`scripts/verify_session1.py`) runs **39** checks
+The implemented gate (`scripts/verify_session1.py`) runs **41** checks
 total, not 30: check 00 (`ast.parse` smoke over all modules) + checks
 1-30 above + checks 31-37 (Part XVIII Section F) + check 38 (embedding
-store build/query, Part XXI). Arithmetic: 1 + 30 + 7 + 1 = 39.
+store build/query, Part XXI) + checks 39-40 (canonical inter-agent
+envelope invariant + highest-revision selection, INFRA-037).
+Arithmetic: 1 + 30 + 7 + 1 + 2 = 41.
 
 Print the table with Status and Detail columns. ALL must be PASS.
 
@@ -1342,6 +1356,11 @@ Added to the agent registry:
 ```
 
 ### Output contract for AMENDMENT_DRAFTER
+
+Under the canonical envelope (INFRA-037) AMENDMENT_DRAFTER emits one wrapper whose
+`items` are amendments — ONE item per amendment, each carrying the `amendment.*`
+fields below as flat per-item fields (the `document_id` is the wrapper's `doc_id`;
+there is no nested `amendments` array). The field meanings are unchanged:
 
 ```json
 {

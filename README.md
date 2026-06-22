@@ -543,7 +543,7 @@ pipeline interactively.
 Other entry points:
 
 ```bash
-py -3.9 -X utf8 scripts/verify_session1.py      # 39-check verification gate
+py -3.9 -X utf8 scripts/verify_session1.py      # 41-check verification gate
 py -3.9 scripts/bus_viewer.py --follow          # live bus + cost stream (latest run)
 py -3.9 scripts/bus_viewer.py --run NAME        # view a specific run folder
 ```
@@ -637,14 +637,14 @@ last.
 
 ## Verify gate
 
-`scripts/verify_session1.py` runs 39 structural invariants. Examples:
+`scripts/verify_session1.py` runs 41 structural invariants. Examples:
 
 - bus parses as JSONL and is append-only
 - every bus message has a non-empty `constitution_check`
 - every amendment comment contains ≥1 `CONV-*` and ≥1 `REF-*`
 - every `REF-*` cited in an amendment exists in the intake index
-- ARCHIVIST produced a `structural_inventory` in
-  `corpus_level_analysis` mode
+- every agent message body is the canonical wrapper of flat items (check 39)
+- the current item revision is selected by highest `revision` (check 40)
 - embedding store filename set equals `input/context/` filename set
 - cost-tracker totals reconcile with the per-call ledger
 - no domain-specific terms in framework scripts (check 22)
@@ -655,8 +655,8 @@ last.
 py -3.9 -X utf8 scripts/verify_session1.py
 ```
 
-Latest run: **PASS=39, WARN=0, FAIL=0**. The gate is a standalone harness; a
-FAIL signals a regression to fix before relying on a run. PASS=39 is the
+Latest run: **PASS=41, WARN=0, FAIL=0**. The gate is a standalone harness; a
+FAIL signals a regression to fix before relying on a run. PASS=41 is the
 stability target; any drop flags regression before it leaves the local machine.
 The gate is non-mutating: it exercises components against a throwaway temporary
 run folder, so running it never writes into `output/runs/` or `durable/`.
@@ -790,7 +790,7 @@ project_shimmer/
 ├── reference/                       # static references
 └── scripts/
     ├── pipeline.py                  # entry point
-    ├── verify_session1.py           # 39-check gate
+    ├── verify_session1.py           # 41-check gate
     ├── agent_wrapper.py             # the single agent driver (by registry name)
     ├── guard_secrets.py             # pre-commit scanner
     └── ...

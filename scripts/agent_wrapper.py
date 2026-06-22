@@ -167,6 +167,112 @@ def _iter_balanced_json(text):
         i += 1
 
 
+# ---------------------------------------------------------------------------
+# Canonical inter-agent envelope (INFRA-037).
+#
+# Every agent output payload is ONE wrapper, carried as body.payload inside the
+# existing message-bus transport envelope (the transport envelope is unchanged):
+#
+#     {"agent": str, "doc_id": str, "items": [ <flat item>, ... ]}
+#
+# items is ALWAYS a list (singleton -> one element; empty result -> []). No bare
+# list, no bare dict, ever. Each item is STRICTLY FLAT (interp #1): every value is
+# a scalar OR an array of scalars -- no nested objects, no arrays of objects.
+# Structure is expressed as MORE ITEMS, not nesting.
+#
+# Per-item core fields:
+#   model-owned (the model must supply): ref, kind, confidence, and verdict
+#     (verdict is OPTIONAL: present when the agent judges, absent when it only
+#     extracts).
+#   runtime-owned (stamped/derived here, interp #2 -- the model is never required
+#     to produce these correctly): item_id, revision, ts.
+#   ref is the singular PRIMARY anchor consumers filter on; ref_ids is the flat
+#     array carrying all citations (interp #3).
+CORE_ITEM_REQUIRED = ("ref", "kind", "confidence")  # model-owned; verdict optional
+
+
+def _is_scalar(v) -> bool:
+    return v is None or isinstance(v, (str, int, float, bool))
+
+
+def _is_flat_item(item) -> bool:
+    """Interp #1: an item is one level -- every value is a scalar or an array of
+    scalars. A nested object, or an array containing an object, is NOT flat."""
+    if not isinstance(item, dict):
+        return False
+    for v in item.values():
+        if _is_scalar(v):
+            continue
+        if isinstance(v, list) and all(_is_scalar(e) for e in v):
+            continue
+        return False
+    return True
+
+
+def is_envelope(payload) -> bool:
+    """True iff payload is the canonical wrapper shape (agent:str, doc_id:str,
+    items:list). Does not validate per-item content."""
+    return (isinstance(payload, dict)
+            and isinstance(payload.get("agent"), str)
+            and isinstance(payload.get("doc_id"), str)
+            and isinstance(payload.get("items"), list))
+
+
+def make_envelope(agent, doc_id, items) -> dict:
+    """Build/normalize the canonical wrapper, stamping the RUNTIME-owned per-item
+    fields (interp #2): ts (UTC now) and revision (default 1) when absent, and a
+    derived item_id when the model omitted one. Model-owned fields are untouched.
+    Re-emitting the same logical item with a higher `revision` is how a producer
+    supersedes a prior value (see current_items)."""
+    norm = []
+    for idx, it in enumerate(items or []):
+        if not isinstance(it, dict):
+            norm.append(it)  # left as-is; validation will flag it
+            continue
+        item = dict(it)
+        if not item.get("ts"):
+            item["ts"] = _now()
+        if not isinstance(item.get("revision"), int) or isinstance(item.get("revision"), bool):
+            item["revision"] = 1
+        if not item.get("item_id"):
+            item["item_id"] = f"{agent}:{item.get('kind')}:{item.get('ref')}:{idx}"
+        norm.append(item)
+    return {"agent": agent, "doc_id": doc_id, "items": norm}
+
+
+def current_items(items):
+    """VERSION GUARDRAIL (INFRA-037): reduce items to the current revision per
+    item_id -- highest `revision`, tie-break latest `ts`. Items without an item_id
+    are kept as-is (they cannot collide). This is the single helper every consumer
+    uses so a superseded value is never read."""
+    best = {}
+    passthrough = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        key = it.get("item_id")
+        if key is None:
+            passthrough.append(it)
+            continue
+        cur = best.get(key)
+        cand_rank = (it.get("revision", 1), it.get("ts", ""))
+        if cur is None or cand_rank > (cur.get("revision", 1), cur.get("ts", "")):
+            best[key] = it
+    return list(best.values()) + passthrough
+
+
+def decode_items(payload, *, current=True):
+    """THE canonical decoder. Given an agent's body.payload (the wrapper), return
+    its items -- by default reduced to the current revision per item_id. A payload
+    that is not the canonical wrapper returns [] (callers treat an absent/invalid
+    wrapper as 'no items', then flag absence per the READ-WHEN-PRESENT rule). This
+    is the ONE reader; no agent path bypasses it."""
+    if not is_envelope(payload):
+        return []
+    items = [it for it in payload["items"] if isinstance(it, dict)]
+    return current_items(items) if current else items
+
+
 @dataclass
 class CallResult:
     backend: str
@@ -376,55 +482,53 @@ class AgentWrapper:
         return CallResult(self.backend, "?", "", ok=False, error=f"unknown backend {self.backend!r}")
 
     def _contract_missing(self, obj):
-        """Required-field validation of a parsed object against this agent's
-        contract. Returns the list of missing fields; an empty list means the
-        object satisfies contract.required (and the AMENDMENT_DRAFTER nested
-        requirements). This is the single source of 'does it satisfy the
-        contract', reused by both the strict and tolerant parse paths."""
+        """Validate obj against the CANONICAL ENVELOPE (INFRA-037). Returns the
+        list of problems; an empty list means the wrapper is valid (an empty
+        `items` list IS valid -- a 'nothing to report' result). A bare list or
+        bare dict is rejected: it is not the wrapper.
+
+        Checks: the wrapper shape ({agent:str, doc_id:str, items:list}); per item,
+        flatness (interp #1), the model-owned core fields (ref/kind/confidence;
+        verdict optional, runtime stamps item_id/revision/ts), and this agent's
+        contract `required` (agent-specific per-item fields)."""
+        if not is_envelope(obj):
+            return ["not a canonical envelope {agent:str, doc_id:str, items:list}"]
         missing = []
-        required = self.contract.get("required", [])
-        if isinstance(obj, list):
-            for i, item in enumerate(obj):
-                if isinstance(item, dict):
-                    for rkey in required:
-                        if rkey not in item:
-                            missing.append(f"[{i}].{rkey}")
-        elif isinstance(obj, dict):
+        required = self.contract.get("required", [])  # agent-specific per-item fields
+        for i, item in enumerate(obj["items"]):
+            if not isinstance(item, dict):
+                missing.append(f"items[{i}].(not an object)")
+                continue
+            if not _is_flat_item(item):
+                missing.append(f"items[{i}].(not flat: nested object or array-of-objects)")
+            for rkey in CORE_ITEM_REQUIRED:
+                if rkey not in item or item.get(rkey) in (None, ""):
+                    missing.append(f"items[{i}].{rkey}")
             for rkey in required:
-                if rkey not in obj:
-                    missing.append(rkey)
-        elif required:
-            # a bare scalar can never satisfy a field-bearing contract
-            missing.append("(output is not an object or array)")
-        # AMENDMENT_DRAFTER: each amendment object inside .amendments must
-        # carry the location / convention_ref / original_text / action /
-        # severity / comment fields. A missing or None value here is a
-        # contract violation and bubbles up to a CHALLENGE on the bus.
-        if self.name == "AMENDMENT_DRAFTER" and isinstance(obj, dict):
-            amendments = obj.get("amendments")
-            if isinstance(amendments, list):
-                nested_required = ("location", "convention_ref", "original_text",
-                                   "action", "severity", "comment")
-                for i, a in enumerate(amendments):
-                    if not isinstance(a, dict):
-                        missing.append(f"amendments[{i}].(not an object)")
-                        continue
-                    for field_name in nested_required:
-                        if field_name not in a or a.get(field_name) in (None, ""):
-                            missing.append(f"amendments[{i}].{field_name}")
+                if rkey not in item or item.get(rkey) in (None, ""):
+                    missing.append(f"items[{i}].{rkey}")
         return missing
 
-    def parse_contract_output(self, raw):
-        """Parse the model response into the agent's contract object.
+    def _finalize_envelope(self, obj):
+        """Validate obj as the wrapper and (when it is one) stamp the runtime-owned
+        item fields. Returns (wrapper-or-obj, missing)."""
+        missing = self._contract_missing(obj)
+        if is_envelope(obj):
+            return make_envelope(obj["agent"], obj["doc_id"], obj["items"]), missing
+        return obj, missing
 
-        (1) STRICT fast path: whole-response json.loads — unchanged behavior for
-            already-clean output.
-        (2) TOLERANT scan (only if strict fails): find ALL balanced top-level JSON
-            candidates (objects and arrays, ignoring delimiters inside strings) and
-            return the FIRST that satisfies contract.required. If none satisfies but
-            at least one parses, return the first parseable candidate WITH its
-            missing-field list (so the violation is still reported, never masked).
-            If nothing parses, return (None, [parse failure])."""
+    def parse_contract_output(self, raw):
+        """Parse the model response into the CANONICAL ENVELOPE (INFRA-037).
+
+        (1) STRICT fast path: whole-response json.loads. A clean wrapper is
+            accepted (and stamped); a clean bare list/dict is REJECTED (it is not
+            the wrapper) and reported as a contract violation.
+        (2) TOLERANT recovery (only if strict json fails): scan balanced JSON
+            candidates and recover the FIRST that is a valid wrapper -- recovery
+            recovers INTO the wrapper, it never fabricates one from a bare list. If
+            a candidate parses but is not a valid wrapper, it is returned as a
+            best-effort with its problems (so the violation is reported, not
+            masked). If nothing parses, return (None, [parse failure])."""
         text = raw.strip()
         if text.startswith("```"):
             text = text.strip("`")
@@ -432,16 +536,11 @@ class AgentWrapper:
         # (1) strict fast path
         try:
             obj = json.loads(text)
-            return obj, self._contract_missing(obj)
+            return self._finalize_envelope(obj)
         except json.JSONDecodeError:
             pass
-        # (2) tolerant scan over balanced candidates. Prefer a NON-EMPTY candidate
-        # that satisfies the contract (an empty [] / {} satisfies a per-item
-        # contract only vacuously and carries no required content, so it must not
-        # mask a real object that appears later in messy output).
-        first_satisfying_empty = None
+        # (2) tolerant recovery: first balanced candidate that is a valid wrapper
         first_parsed = None
-        first_missing = None
         last_error = None
         found_candidate = False
         for cand in _iter_balanced_json(text):
@@ -451,18 +550,13 @@ class AgentWrapper:
             except json.JSONDecodeError as e:
                 last_error = e
                 continue
-            missing = self._contract_missing(obj)
+            env, missing = self._finalize_envelope(obj)
             if not missing:
-                if obj not in ([], {}):
-                    return obj, []  # first non-empty candidate that satisfies the contract
-                if first_satisfying_empty is None:
-                    first_satisfying_empty = obj
+                return env, []  # first candidate that is a valid wrapper
             if first_parsed is None:
-                first_parsed, first_missing = obj, missing  # best-effort fallback
-        if first_satisfying_empty is not None:
-            return first_satisfying_empty, []
+                first_parsed = (env, missing)  # best-effort fallback (reports the violation)
         if first_parsed is not None:
-            return first_parsed, first_missing
+            return first_parsed
         if found_candidate and last_error is not None:
             return None, [f"json parse failure: {last_error}"]
         return None, ["no JSON object found in output"]
@@ -512,10 +606,30 @@ class AgentWrapper:
     def build_constitution_check(self, *, laws_consulted, result, resolution=""):
         return {"laws_consulted": laws_consulted, "result": result, "resolution": resolution}
 
+    def _output_contract_text(self) -> str:
+        """The CANONICAL ENVELOPE output instruction (INFRA-037), shared by
+        prompt_template and _stable_agent_block so the two never drift. Instructs
+        the wrapper with a 'nothing to report' example and a one-item example."""
+        cf = self.contract.get("fields", {}); required = self.contract.get("required", [])
+        return (
+            "## Output contract — return ONE JSON object (the canonical envelope), no markdown fences:\n"
+            f'{{"agent": "{self.name}", "doc_id": "<document id>", "items": [ ... ]}}\n'
+            "`items` is ALWAYS a list. Each item is FLAT: one level, values are scalars or arrays of "
+            "scalars only — NO nested objects and NO arrays of objects (express structure as MORE items, "
+            "e.g. one item per finding/element/redaction).\n"
+            "Per item, supply the core fields: ref (the REF-*/segment id this item is about), kind, "
+            "confidence (CONFIDENT|UNCERTAIN), verdict (only when you judge), ref_ids (flat array of all "
+            "REF-* you cite). Plus this agent's fields: "
+            f"{cf}; required per item: {required}. "
+            "(item_id, revision, ts are stamped by the runtime — you may omit them.)\n"
+            f'Nothing to report -> {{"agent": "{self.name}", "doc_id": "<id>", "items": []}}\n'
+            f'One item -> {{"agent": "{self.name}", "doc_id": "<id>", "items": ['
+            '{"ref": "REF-0001", "kind": "finding", "confidence": "CONFIDENT", "ref_ids": ["REF-0001"]}]}\n'
+        )
+
     def prompt_template(self, context_text, work):
         does = "\n".join(f"- {d}" for d in self.spec.get("does", []))
         does_not = "\n".join(f"- {d}" for d in self.spec.get("does_not", []))
-        cf = self.contract.get("fields", {}); required = self.contract.get("required", [])
         directives = self.contract.get("directives") or []
         work_str = work if isinstance(work, str) else json.dumps(work, ensure_ascii=False, indent=2)
         directives_block = ""
@@ -528,10 +642,7 @@ class AgentWrapper:
                 f"## You DO NOT (LAW-II)\n{does_not}\n\n"
                 f"{directives_block}"
                 f"## Context\n{context_text}\n\n"
-                f"## Output contract (return JSON only)\n"
-                f"Fields: {cf}\nRequired keys: {required}\n"
-                f"If multiple findings (per claim/per paragraph/per amendment), return a JSON array of objects.\n"
-                f"Otherwise return a single JSON object. No markdown fences.\n\n"
+                f"{self._output_contract_text()}\n"
                 f"## Work payload\n{work_str}\n")
 
     def _stable_agent_block(self) -> str:
@@ -541,7 +652,6 @@ class AgentWrapper:
         prompt_template (only relocated to the front for caching)."""
         does = "\n".join(f"- {d}" for d in self.spec.get("does", []))
         does_not = "\n".join(f"- {d}" for d in self.spec.get("does_not", []))
-        cf = self.contract.get("fields", {}); required = self.contract.get("required", [])
         directives = self.contract.get("directives") or []
         directives_block = ""
         if directives:
@@ -552,10 +662,7 @@ class AgentWrapper:
                 f"## You DO\n{does}\n\n"
                 f"## You DO NOT (LAW-II)\n{does_not}\n\n"
                 f"{directives_block}"
-                f"## Output contract (return JSON only)\n"
-                f"Fields: {cf}\nRequired keys: {required}\n"
-                f"If multiple findings (per claim/per paragraph/per amendment), return a JSON array of objects.\n"
-                f"Otherwise return a single JSON object. No markdown fences.\n")
+                f"{self._output_contract_text()}")
 
     def build_prompt(self, pkg, work):
         """Cache-structured prompt as (stable_prefix, dynamic_suffix), INFRA-036.

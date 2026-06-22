@@ -397,19 +397,29 @@ def check_18_contract_validation():
     bus = MessageBus.open(bus_path)
     registry = json.loads((CONFIG / "agent_registry.json").read_text())["agents"]
     contracts = json.loads((CONFIG / "agent_contracts.json").read_text())["contracts"]
+    from agent_wrapper import decode_items, is_envelope
     w = AgentWrapper(name="FACT_CHECKER", constitution=c, bus=bus, registry=registry,
                      contracts=contracts, keys={"OPENAI_API_KEY": "stub"},
                      run_context=_VERIFY_RUN)
-    sample = json.dumps({
-        "claim_id": "C-1", "original_text": "test", "verdict": "CONFIRMED",
-        "evidence": "test source", "source_url": "https://example.com",
-        "confidence": 0.9, "search_method": "test",
-    })
-    obj, missing = w.parse_contract_output(sample)
+    # Canonical envelope (INFRA-037): a valid wrapper with one flat core-bearing item.
+    good = json.dumps({"agent": "FACT_CHECKER", "doc_id": "verify_doc", "items": [
+        {"ref": "REF-0001", "kind": "finding", "confidence": "CONFIDENT", "verdict": "CONFIRMED",
+         "claim_id": "C-1", "original_text": "test", "search_method": "test", "ref_ids": ["REF-0001"]}]})
+    obj, missing = w.parse_contract_output(good)
+    if missing: return _fail(f"valid envelope rejected: {missing}")
+    if not is_envelope(obj): return _fail("parser did not return the canonical wrapper")
+    items = decode_items(obj)
+    if not items or items[0].get("verdict") != "CONFIRMED": return _fail("verdict lost")
+    if not all(k in items[0] for k in ("item_id", "revision", "ts")):
+        return _fail("runtime fields (item_id/revision/ts) not stamped")
+    # a bare list / bare dict is NOT the wrapper and must be rejected
+    _, m_list = w.parse_contract_output(json.dumps(
+        [{"ref": "R", "kind": "finding", "confidence": "CONFIDENT",
+          "claim_id": "C", "verdict": "CONFIRMED", "search_method": "t"}]))
+    _, m_dict = w.parse_contract_output(json.dumps({"claim_id": "C", "verdict": "CONFIRMED"}))
     bus_path.unlink()
-    if missing: return _fail(f"missing: {missing}")
-    if obj.get("verdict") != "CONFIRMED": return _fail("verdict missing")
-    return _ok("parser validates JSON + required fields")
+    if not m_list or not m_dict: return _fail("bare list/dict accepted (not the wrapper)")
+    return _ok("parser enforces canonical wrapper + per-item core; bare list/dict rejected")
 
 
 def check_19_bus_constitution_field():
@@ -688,20 +698,22 @@ def check_33_reference_builder():
 
 
 def check_34_amendment_drafter_contract():
-    """Output contract for AMENDMENT_DRAFTER must require document_id + amendments
-    and define ref_id-bearing fields per Part XVIII Section D."""
+    """Under the canonical envelope (INFRA-037) each AMENDMENT_DRAFTER item IS one
+    amendment. The contract must require the traceability fields per item and
+    define the amendment fields per Part XVIII Section D."""
     contracts = json.loads((CONFIG / "agent_contracts.json").read_text(encoding="utf-8"))
     c = contracts.get("contracts", {}).get("AMENDMENT_DRAFTER")
     if not c: return _fail("AMENDMENT_DRAFTER contract missing")
-    if set(c.get("required", [])) != {"document_id", "amendments"}:
-        return _fail(f"required={c.get('required')}")
+    req = set(c.get("required", []))
+    needed_req = {"location", "convention_ref", "original_text", "action", "comment", "ref_ids"}
+    if not needed_req <= req:
+        return _fail(f"required missing {sorted(needed_req - req)}")
     fields = c.get("fields", {})
-    needed = {"amendment.location", "amendment.convention_ref", "amendment.comment",
-              "amendment.original_text", "amendment.proposed_text", "amendment.action",
-              "amendment.severity"}
+    needed = {"location", "convention_ref", "context_refs", "comment",
+              "original_text", "proposed_text", "action", "severity"}
     missing = needed - set(fields)
     if missing: return _fail(f"missing fields: {sorted(missing)}")
-    return _ok("AMENDMENT_DRAFTER contract has document_id + amendments + amendment.*")
+    return _ok("AMENDMENT_DRAFTER amendment item requires location/convention_ref/comment/action/ref_ids")
 
 
 def check_35_amendment_comment_citation_format():
@@ -724,7 +736,12 @@ def check_35_amendment_comment_citation_format():
     for bc in bad_comments:
         if validate_amendment_comment(bc):
             return _fail(f"validator accepted invalid: {bc!r}")
-    return _ok("validator enforces >=1 CONV-* and >=1 REF-*")
+    # INFRA-037: the flat citation array (ref_ids) is required on amendment items.
+    contracts = json.loads((CONFIG / "agent_contracts.json").read_text(encoding="utf-8"))
+    ad = contracts.get("contracts", {}).get("AMENDMENT_DRAFTER", {})
+    if "ref_ids" not in set(ad.get("required", [])):
+        return _fail("AMENDMENT_DRAFTER must require ref_ids (the flat citation array)")
+    return _ok("validator enforces >=1 CONV-* and >=1 REF-*; ref_ids required per amendment item")
 
 
 def check_36_summaries_for_cutoff_docs():
@@ -838,6 +855,65 @@ def check_38_embedding_store():
     )
 
 
+def check_39_canonical_envelope():
+    """INFRA-037: every agent's output payload is the canonical wrapper
+    {agent, doc_id, items:[flat items]}. For ALL 14 agents, a valid wrapper of one
+    flat core-bearing item validates; a bare list, a bare dict, and an item with a
+    nested object are all rejected; an empty items list is valid."""
+    from agent_wrapper import AgentWrapper, is_envelope, decode_items
+    from constitution import Constitution
+    from message_bus import MessageBus
+    c = Constitution.load(CONFIG / "constitution.json")
+    bus_path = _VERIFY_RUN.logs_dir() / "_verify_env_bus.jsonl"
+    if bus_path.exists(): bus_path.unlink()
+    bus = MessageBus.open(bus_path)
+    registry = json.loads((CONFIG / "agent_registry.json").read_text())["agents"]
+    contracts = json.loads((CONFIG / "agent_contracts.json").read_text())["contracts"]
+    for name in registry:
+        w = AgentWrapper(name=name, constitution=c, bus=bus, registry=registry,
+                         contracts=contracts, keys={"stub": "1"}, run_context=_VERIFY_RUN)
+        item = {"ref": "REF-0001", "kind": "finding", "confidence": "CONFIDENT"}
+        for rk in contracts.get(name, {}).get("required", []):
+            item.setdefault(rk, "x")
+        good = json.dumps({"agent": name, "doc_id": "d", "items": [item]})
+        obj, missing = w.parse_contract_output(good)
+        if missing: return _fail(f"{name}: valid wrapper rejected: {missing}")
+        if not is_envelope(obj): return _fail(f"{name}: parser did not return the wrapper")
+        if not all(k in decode_items(obj)[0] for k in ("item_id", "revision", "ts")):
+            return _fail(f"{name}: runtime fields not stamped")
+        _, m_bare = w.parse_contract_output(json.dumps(item))           # bare dict
+        _, m_list = w.parse_contract_output(json.dumps([item]))         # bare list
+        if not m_bare or not m_list:
+            return _fail(f"{name}: bare dict/list accepted (not the wrapper)")
+        nested = dict(item); nested["bad"] = {"nested": 1}              # not flat
+        _, m_nest = w.parse_contract_output(json.dumps({"agent": name, "doc_id": "d", "items": [nested]}))
+        if not any("flat" in str(x) for x in m_nest):
+            return _fail(f"{name}: nested object accepted (flatness not enforced)")
+    # empty items list is a valid 'nothing to report' result
+    _, m_empty = w.parse_contract_output(json.dumps({"agent": name, "doc_id": "d", "items": []}))
+    bus_path.unlink(missing_ok=True)
+    if m_empty: return _fail(f"empty items rejected: {m_empty}")
+    return _ok("all 14 agents enforce the canonical wrapper of flat core-bearing items")
+
+
+def check_40_highest_revision():
+    """INFRA-037 version guardrail: current_items / decode_items select the highest
+    revision per item_id (tie-break latest ts), so a superseded value is never read."""
+    from agent_wrapper import current_items, decode_items
+    items = [
+        {"item_id": "a", "revision": 1, "ts": "2026-01-01T00:00:00Z", "v": "old"},
+        {"item_id": "a", "revision": 3, "ts": "2026-01-02T00:00:00Z", "v": "mid"},
+        {"item_id": "a", "revision": 3, "ts": "2026-01-03T00:00:00Z", "v": "newest"},  # tie -> latest ts
+        {"item_id": "b", "revision": 1, "ts": "2026-01-01T00:00:00Z", "v": "b"},
+    ]
+    cur = {it["item_id"]: it["v"] for it in current_items(items)}
+    if cur.get("a") != "newest": return _fail(f"highest-revision wrong: {cur}")
+    if cur.get("b") != "b": return _fail("dropped a distinct item_id")
+    d = {it["item_id"]: it["v"] for it in decode_items({"agent": "X", "doc_id": "d", "items": items})}
+    if d.get("a") != "newest": return _fail("decode_items did not apply current-revision selection")
+    return _ok("current revision selected per item_id (tie-break latest ts)")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -887,6 +963,8 @@ CHECKS = [
     ("36 context_summary + operative_summary generators present", check_36_summaries_for_cutoff_docs),
     ("37 review_scope cutoff respected", check_37_review_scope_cutoff),
     ("38 embedding store build + query (Part XXI graceful)", check_38_embedding_store),
+    ("39 canonical inter-agent envelope enforced (INFRA-037)", check_39_canonical_envelope),
+    ("40 highest-revision item selection (INFRA-037)", check_40_highest_revision),
 ]
 
 
