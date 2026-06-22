@@ -612,7 +612,21 @@ BOOT
   Load discovered APIs
   Initialize message bus
   Initialize Top Orchestrator
-  Deprecated-model gate (per-agent live model check).
+  Deprecated-model gate + family-key self-resolution (per-agent live model check,
+    INFRA-026). The tracked registry (config/agent_registry.json) stores each
+    agent's model as a FAMILY+VERSION key only (e.g. claude-haiku-4-5); concrete
+    dated ids (e.g. claude-haiku-4-5-20251001) are NEVER written to a tracked
+    file. At run start each key is resolved against the provider's live model
+    list, by exact family+version prefix, on both the Claude producer and GPT
+    auditor sides:
+      - exactly one live id matches -> bind to that concrete id automatically
+        (resolution, not a swap); the binding is in-memory only and logged to the
+        run record (output/runs/<run>/logs/model_bindings.json);
+      - the key is itself a live id -> use as-is;
+      - ZERO live ids match (gone/deprecated), OR more than one snapshot matches
+        and none is exact (ambiguous) -> the firewall holds: do NOT auto-pick;
+        STOP and require explicit operator approval / a pinned snapshot. No silent
+        swap to a different model, ever.
   Qwen-required startup gate (INFRA-035): confirm the local Qwen redaction
     backend is reachable/configured BEFORE any agent runs. If it is not, REFUSE
     the run — unless the operator waives redaction for THIS run only via
@@ -763,15 +777,16 @@ project_shimmer/
 
 - All outputs go to output/ subdirectories
 - All config goes to config/
-- All reference material goes to reference/
+- All learned reference material goes to durable/reference/ (the old top-level
+  reference/ was retired in the durable refactor)
 - No loose files at project root except genesis.md, CLAUDE.md, README.md,
-  requirements.txt, .gitignore, project_shimmer_cover.png, and the
-  external-key pointer .env_path
+  requirements.txt, .gitignore, project_shimmer_cover.png, the external-key
+  pointer .env_path, and the operator setup launcher setup.bat
 - No scripts in config/, no config in scripts/
 - No output files in input/, no input files in output/
 - No hardcoded paths — everything relative to project root
 - No domain-specific content in scripts/ — domain knowledge
-  lives exclusively in config/ and reference/
+  lives exclusively in config/ and durable/
 - No spaces in paths. No unicode in folder names.
 - English only for all code and config file names.
 - Per-run isolation, the durable-vs-disposable firewall, naming, format-master,
@@ -806,6 +821,56 @@ ANTHROPIC_API_KEY = "..."    # Claude Max subscription
 OPENAI_API_KEY = "..."       # ChatGPT Pro / OpenAI API
 BRAVE_API_KEY = "..."        # Optional, free tier
 ```
+
+The external `config.py` lives **outside** the repo. `load_api_keys`
+(`scripts/agent_wrapper.py`) resolves it at runtime in this fixed order, with no
+absolute path or username baked into any tracked file:
+
+1. `$SHIMMER_CONFIG_PATH` — explicit override (a `config.py` file, or a directory
+   containing one); wins if set and the target exists.
+2. `../api_keys/config.py` — sibling folder one level above the repo root.
+3. `.env_path` — legacy repo-root pointer holding a relative path (fallback).
+
+The reader copies out **API-key values only** (fixed allowlist); any `model = …`
+line in that file is ignored and can never influence model selection
+(`config/agent_registry.json` owns model choice). `.gitignore` blocks
+`**/config.py` and `api_keys*/`, so neither the config nor the external keys
+folder can ever be tracked or pushed.
+
+## Operator setup tool (setup.bat -> scripts/preflight.py)
+
+**Install the base dependencies first (manual, before `setup.bat`):**
+
+```
+py -3.9 -m pip install -r requirements.txt
+```
+
+`setup.bat` does NOT install the base dependencies. It only ensures the two
+optional libraries (`beautifulsoup4`, `langdetect`) are importable; the base set
+in `requirements.txt` must be installed manually with the command above first.
+
+**First-time setup can take a while — this is expected, not a fault.** Installing
+the base dependencies and pulling the Qwen model weights (several gigabytes,
+downloaded on the first run that needs redaction) happen once, on first setup /
+first run, and can take several minutes or longer. Do not interrupt them; let each
+finish. Subsequent runs reuse the installed packages and cached weights.
+
+`setup.bat` at the repo root is a thin double-click launcher: it runs
+`scripts/preflight.py` and pauses so the operator reads the report. ALL logic
+lives in the Python module (a future `setup.sh` / `setup.command` is the same
+thin wrapper). Preflight, in order: (a) locates/loads the config per the order
+above — scaffolding a clearly-marked template and failing cleanly if none is
+found, never fabricating or printing key values; (b) installs `beautifulsoup4` +
+`langdetect` if missing; (c) **reuses** the INFRA-035 Qwen reachability gate
+(`redaction_gate.qwen_backend_status`), deploy-if-missing, and — if still
+unreachable — requires a per-run operator override logged to the governance
+ledger rather than silently bypassing; (d) **reuses** the same gate's GPU
+soft-check (warn-only, never blocks, never records); (e) queries each provider's
+live `models.list()` (**reuses** `model_registry`), reports the exact Claude
+producer and GPT auditor ids, confirms none are deprecated and that `gpt-4o` is
+present, and lists any stronger reasoning-grade auditor as an approval candidate
+**without swapping**. It never runs the paid pipeline and ends with an honest
+bill of health separating what is ready from what stays unproven until a paid run.
 
 ---
 

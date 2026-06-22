@@ -1,15 +1,26 @@
 """Live model resolution + deprecated-model gate (INFRA-026).
 
 The agent registry (config/agent_registry.json) is the SOLE source of each
-agent's model id. At run start the pipeline resolves every agent's assigned
-model against the provider's CURRENT model list (queried live) and refuses to
-run if any assigned model has been retired.
+agent's model, stored as a FAMILY+VERSION key (e.g. 'claude-haiku-4-5'), never a
+concrete dated id. At run start the pipeline resolves every agent's family key
+against the provider's CURRENT model list (queried live):
 
-Swaps are NEVER automatic. The operator must explicitly approve each
-replacement; an unapproved deprecated model STOPS the run. If a graphical or
-remote operator UI is ever built, this approval step MUST surface there too --
-a dead model must never be swapped in without an explicit human decision,
-regardless of interface (see enforce_current_models).
+  * SELF-RESOLUTION (not a swap): if a family key is absent but EXACTLY ONE live
+    id extends it on a separator boundary (e.g. 'claude-haiku-4-5-20251001'), it
+    binds to that concrete id automatically and logs the binding to the run
+    record. The concrete id is used in-memory only and is NEVER written to a
+    tracked file (the registry keeps the family key). See resolve_model_id.
+
+  * FIREWALL (unchanged INFRA-026 protection): if ZERO live ids match the family
+    key (model genuinely gone/deprecated), OR more than one snapshot matches and
+    none is exact (ambiguous), the run does NOT auto-pick. The operator must
+    explicitly approve a replacement / pin a snapshot; an unapproved mismatch
+    STOPS the run. This applies to both the Claude producer and GPT auditor sides.
+
+Swaps to a DIFFERENT model are NEVER automatic. If a graphical or remote operator
+UI is ever built, this approval step MUST surface there too -- a model is never
+replaced with a different one without an explicit human decision, regardless of
+interface (see enforce_current_models).
 """
 
 from __future__ import annotations
@@ -76,35 +87,90 @@ def _suggest_replacement(backend, available):
     return None
 
 
-def verify_models_current(registry, keys):
-    """Compare every agent's assigned model against the live list for its
-    backend.
+def resolve_model_id(configured, available):
+    """Self-resolve a configured family+version key (e.g. 'claude-haiku-4-5') to
+    the concrete id the provider exposes today (e.g. 'claude-haiku-4-5-20251001').
 
-    Returns (findings, skipped):
-      findings: list of {agent, backend, dead_model, suggested_replacement}
-                for assigned models NOT in the provider's current list.
+    Matching is by EXACT family+version prefix on a separator boundary: a live id
+    `L` matches configured key `K` iff `L == K` or `L` starts with `K + "-"`. This
+    keeps `claude-haiku-4-5` from matching a different family/version/tier.
+
+    `available` is the live id set for the backend, or None when it cannot be
+    obtained (no key / SDK / network / local backend).
+
+    Returns (status, resolved_id, candidates):
+      'unverifiable' : available is None  -> use `configured` as-is (no live proof).
+      'exact'        : `configured` is itself a live id -> use as-is.
+      'bound'        : `configured` is absent but EXACTLY ONE live id extends it
+                       -> auto-resolve to that concrete id. This is RESOLUTION
+                       within the same family+version, not a swap.
+      'deprecated'   : ZERO live ids match (model genuinely gone) -> firewall:
+                       requires operator approval, never auto-picked (INFRA-026).
+      'ambiguous'    : MORE THAN ONE live id extends it and none is exact (several
+                       dated snapshots) -> firewall: operator must choose; never
+                       silently picked.
+    """
+    if available is None:
+        return ("unverifiable", configured, [])
+    if configured in available:
+        return ("exact", configured, [configured])
+    matches = sorted(m for m in available if m.startswith(configured + "-"))
+    if len(matches) == 1:
+        return ("bound", matches[0], matches)
+    if not matches:
+        return ("deprecated", None, [])
+    return ("ambiguous", None, matches)
+
+
+def verify_models_current(registry, keys):
+    """Resolve+verify every agent's configured model (a family+version key)
+    against the live list for its backend.
+
+    Returns (findings, skipped, bindings):
+      findings: list of {agent, backend, dead_model, reason, candidates,
+                suggested_replacement} for models that DO NOT self-resolve
+                (zero live matches = deprecated, or >1 ambiguous snapshots).
+                These require operator approval -- never auto-picked.
       skipped:  list of {agent, backend, model} for backends whose live list
-                could not be obtained (no key / local) -- reported, never swapped.
+                could not be obtained (no key / local) -- reported, never bound.
+      bindings: list of {agent, backend, from, to} for family keys that resolved
+                to EXACTLY ONE concrete live id. Applied in-memory at startup and
+                logged to the run record; NEVER written to a tracked file.
     """
     agents = registry.get("agents", registry)
     cache = {}
     findings = []
     skipped = []
+    bindings = []
     for name, spec in agents.items():
         backend = spec.get("backend")
         model = spec.get("model")
         if backend not in cache:
             cache[backend] = list_available_models(backend, keys)
         available = cache[backend]
-        if available is None:
+        status, resolved, candidates = resolve_model_id(model, available)
+        if status == "unverifiable":
             skipped.append({"agent": name, "backend": backend, "model": model})
-            continue
-        if model not in available:
+        elif status == "exact":
+            continue  # already a concrete live id; nothing to do
+        elif status == "bound":
+            bindings.append({"agent": name, "backend": backend,
+                             "from": model, "to": resolved})
+        elif status == "deprecated":
             findings.append({
                 "agent": name, "backend": backend, "dead_model": model,
+                "reason": "no live id matches this family+version (gone/deprecated)",
+                "candidates": [],
                 "suggested_replacement": _suggest_replacement(backend, available),
             })
-    return findings, skipped
+        elif status == "ambiguous":
+            findings.append({
+                "agent": name, "backend": backend, "dead_model": model,
+                "reason": "multiple live snapshots match; operator must pin one",
+                "candidates": candidates,
+                "suggested_replacement": None,
+            })
+    return findings, skipped, bindings
 
 
 def _record_approval(project_root, approvals):
@@ -141,19 +207,23 @@ def enforce_current_models(project_root, registry, keys, *, interactive,
     Never auto-swaps. NOTE: if a UI is ever added, this approval MUST surface
     there too -- a dead model is never replaced without a human decision.
     """
-    findings, skipped = verify_models_current(registry, keys)
+    findings, skipped, bindings = verify_models_current(registry, keys)
     result = {"ok": not findings, "findings": findings, "skipped": skipped,
-              "approved": [], "stopped": False}
+              "bindings": bindings, "approved": [], "stopped": False}
     if not findings:
         return result
 
     agents = registry.get("agents", registry)
     approvals = []
     for f in findings:
-        msg = (f"[model-gate] Agent {f['agent']} is assigned model "
-               f"{f['dead_model']!r}, which is NOT in {f['backend']}'s current "
-               f"model list (deprecated/retired). Proposed current replacement: "
-               f"{f['suggested_replacement']!r}.")
+        if f.get("candidates"):
+            msg = (f"[model-gate] Agent {f['agent']} is assigned family key "
+                   f"{f['dead_model']!r}; {f['reason']}. Live candidates: "
+                   f"{f['candidates']}. Pin one in config/agent_registry.json.")
+        else:
+            msg = (f"[model-gate] Agent {f['agent']} is assigned model "
+                   f"{f['dead_model']!r}; {f.get('reason', 'not in the current list')}. "
+                   f"Proposed current replacement: {f['suggested_replacement']!r}.")
         approved = False
         if interactive and operator_handler is not None:
             decision = operator_handler("MODEL_DEPRECATED", {

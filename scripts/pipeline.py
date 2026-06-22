@@ -1063,10 +1063,13 @@ def main(argv=None):
     keys = load_api_keys()
     search_router = SearchRouter.open(ROOT, keys=keys)
 
-    # Deprecated-model gate (INFRA-026): resolve every agent's assigned model
-    # against the provider's CURRENT live list and STOP if any is retired.
-    # Never auto-swaps; the operator approves each replacement. Backends whose
+    # Deprecated-model gate + self-resolution (INFRA-026): resolve every agent's
+    # configured FAMILY KEY against the provider's CURRENT live list. A family key
+    # that matches exactly one concrete live id binds to it automatically (in-memory
+    # only -- never written to the tracked registry); zero or ambiguous matches STOP
+    # and require operator approval. Never swaps to a different model. Backends whose
     # live list is unavailable (no key / local Qwen) are skipped gracefully.
+    resolved_agents = None  # threaded into boot so agents run the bound concrete ids
     if not args.skip_model_check:
         registry_path = ROOT / "config" / "agent_registry.json"
         registry = json.loads(registry_path.read_text(encoding="utf-8"))
@@ -1083,10 +1086,25 @@ def main(argv=None):
                   f"{a['from']!r} -> {a['to']!r}", file=sys.stderr)
         if not gate["ok"]:
             dead = [f"{f['agent']}={f['dead_model']!r}" for f in gate["findings"]]
-            print(f"[model-gate] STOP: deprecated models not approved: {dead}. "
-                  f"Approve a replacement, update agent_registry.json, or pass "
-                  f"--skip-model-check to override.", file=sys.stderr)
+            print(f"[model-gate] STOP: models not auto-resolvable / not approved: {dead}. "
+                  f"Approve a replacement, pin a live snapshot in agent_registry.json, "
+                  f"or pass --skip-model-check to override.", file=sys.stderr)
             return 3
+        # Apply live family-key -> concrete-id bindings to the in-memory registry
+        # ONLY (the tracked file keeps family keys). The gate's own persist already
+        # ran above with family keys intact, so this never writes a dated id to disk.
+        bindings = gate.get("bindings", [])
+        for b in bindings:
+            registry["agents"][b["agent"]]["model"] = b["to"]
+            print(f"[model-gate] resolved {b['agent']} ({b['backend']}): "
+                  f"{b['from']!r} -> {b['to']!r} (live binding)", file=sys.stderr)
+        if bindings:
+            # Log the bindings to the run record (per-run, gitignored; not a tracked file).
+            rec = run_ctx.logs_dir() / "model_bindings.json"
+            rec.parent.mkdir(parents=True, exist_ok=True)
+            rec.write_text(json.dumps({"bindings": bindings}, indent=2, ensure_ascii=False),
+                           encoding="utf-8")
+        resolved_agents = registry["agents"]
 
     # Qwen-required startup gate (INFRA-035): redaction is the always-on final pass
     # (INFRA-034) and runs on the local Qwen backend. Refuse to start if Qwen is not
@@ -1158,7 +1176,8 @@ def main(argv=None):
     handler = None if args.non_interactive else _interactive_handler
     orch = TopOrchestrator.boot(ROOT, interactive=not args.non_interactive,
                                  operator_handler=handler, cost_tracker=cost_tracker,
-                                 run_adaptive_spawn=True, run_context=run_ctx)
+                                 run_adaptive_spawn=True, run_context=run_ctx,
+                                 registry=resolved_agents)
     orch.run_objectives = args.run_objectives
 
     # Parse conventions -> registry

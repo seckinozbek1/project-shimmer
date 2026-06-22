@@ -25,6 +25,21 @@ Stored outside the repository. The relative path to the local `config.py` is in 
 - English only for code, config file names, and folder names. No spaces or unicode in paths.
 - Every numbered DELTA is recorded as an amendment in `config/constitution.json` (`amendments[]`) — the canonical log. The README roster lists them all; no DELTA lives only in the roster.
 
+## First-time setup
+
+Install the base dependencies manually, *before* running `setup.bat`:
+
+```
+py -3.9 -m pip install -r requirements.txt
+```
+
+`setup.bat` does NOT install the base dependencies — it only ensures the two
+optional libraries (`beautifulsoup4`, `langdetect`) are importable. First-time
+setup can take a while and this is expected, not a fault: installing dependencies
+and pulling the Qwen model weights (several gigabytes, on first setup / first run)
+can take several minutes or longer. Do not interrupt them; subsequent runs reuse
+the installed packages and cached weights.
+
 ## How to run
 
 ```

@@ -49,15 +49,63 @@ def project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def load_api_keys() -> dict[str, str]:
+# External key-file resolution. The operator's config.py lives OUTSIDE the repo
+# and is located at runtime in this fixed order — no absolute path or username is
+# ever baked into a tracked file:
+#   1. $SHIMMER_CONFIG_PATH  -- explicit override; may point at a config.py file
+#      or at a directory containing one. Wins if set and the target exists.
+#   2. ../api_keys/config.py -- sibling folder one level above the repo root.
+#   3. .env_path             -- legacy repo-root pointer holding a relative path
+#      to the config (kept as a fallback for pre-existing setups).
+CONFIG_ENV_VAR = "SHIMMER_CONFIG_PATH"
+CONFIG_DIRNAME = "api_keys"
+CONFIG_FILENAME = "config.py"
+
+
+def _as_config_file(p) -> Path:
+    """Normalize a candidate to the config.py file: a candidate may point at the
+    file directly or at a directory that contains it."""
+    p = Path(p).expanduser()
+    return p / CONFIG_FILENAME if p.is_dir() else p
+
+
+def candidate_config_paths() -> "list[tuple[str, Path]]":
+    """Ordered (source-label, path) config candidates. Pure resolution — does not
+    check existence, so callers (e.g. the preflight tool) can report each source.
+    No absolute path or username is hardcoded; everything is relative to the repo
+    root or supplied by the operator's environment."""
     root = project_root()
+    cands: "list[tuple[str, Path]]" = []
+    env = os.environ.get(CONFIG_ENV_VAR)
+    if env:
+        cands.append((CONFIG_ENV_VAR, _as_config_file(env)))
+    cands.append(("sibling ../" + CONFIG_DIRNAME + "/" + CONFIG_FILENAME,
+                  root.parent / CONFIG_DIRNAME / CONFIG_FILENAME))
     env_path_file = root / ".env_path"
-    if not env_path_file.exists():
+    if env_path_file.exists():
+        rel = env_path_file.read_text(encoding="utf-8").strip()
+        if rel:
+            cands.append((".env_path pointer", (root / rel).resolve()))
+    return cands
+
+
+def resolve_config_path() -> "Path | None":
+    """Return the first existing config candidate, or None if the operator has set
+    none up. Resilient by design: a keyless environment is a supported state (the
+    pipeline gates handle absent keys — model-gate skip, redaction waiver)."""
+    for _src, p in candidate_config_paths():
+        try:
+            if p.exists():
+                return p
+        except OSError:
+            continue
+    return None
+
+
+def load_api_keys() -> dict[str, str]:
+    target = resolve_config_path()
+    if target is None:
         return {}
-    rel = env_path_file.read_text(encoding="utf-8").strip()
-    target = (root / rel).resolve()
-    if not target.exists():
-        raise FileNotFoundError(f".env_path points to {target}, which does not exist")
     spec = importlib.util.spec_from_file_location("_shimmer_keys", target)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["_shimmer_keys"] = mod

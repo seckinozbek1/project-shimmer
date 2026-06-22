@@ -158,9 +158,10 @@ same note is recorded in their `config/agent_contracts.json` entries.
 ### Models and selection
 
 `config/agent_registry.json` is the sole source of each agent's backend and
-exact model id (the key layer supplies API keys only, never a model):
+model, stored as a **family+version key** (the key layer supplies API keys only,
+never a model):
 
-| Backend      | Model id                     | Agents                                                  |
+| Backend      | Family key                   | Agents                                                  |
 |--------------|------------------------------|--------------------------------------------------------|
 | `claude_api` | `claude-opus-4-8`            | LEGAL_ANALYST, AMENDMENT_DRAFTER                        |
 | `claude_api` | `claude-sonnet-4-6`          | PROCESSOR, ARCHIVIST, CITATION_RESOLVER                 |
@@ -168,12 +169,27 @@ exact model id (the key layer supplies API keys only, never a model):
 | `openai_api` | `gpt-4o`                     | VERIFIER, FACT_CHECKER, PRACTICE_AUDITOR                |
 | `qwen_local` | `Qwen/Qwen2.5-7B-Instruct`   | REDACT_CLERK, REDACT_AUTHORITY, REDACT_GATE            |
 
-At run start the pipeline resolves every assigned model against the provider's
-current live model list and stops the run if any is retired. Replacements are
-never automatic: the operator approves each one, and the approval is recorded in
+**Self-resolving family keys (INFRA-026).** The tracked registry stores only the
+family+version key; concrete dated ids (e.g. `claude-haiku-4-5-20251001`) are
+**never written into tracked files**. At run start the pipeline queries each
+provider's current live model list and resolves every key, by exact family+version
+prefix, on both the Claude producer and GPT auditor sides:
+
+- **Exactly one live id matches** → it binds automatically to that concrete id.
+  This is *resolution, not a swap*; the binding is applied in memory and logged to
+  the run record (`output/runs/<run>/logs/model_bindings.json`).
+- **The key is itself a live id** → used as-is.
+- **Zero live ids match** (the family+version is genuinely gone/deprecated), **or
+  more than one snapshot matches and none is exact** (ambiguous) → the run does
+  **not** auto-pick. It stops and requires explicit operator approval, exactly as
+  the deprecated-model firewall always has. No silent swap to a different model.
+
+Operator-approved replacements are recorded in
 `durable/governance/model_approvals.json`. Backends whose live list cannot be
 queried (no key, or the local Qwen backend) are skipped with a note. Pass
-`--skip-model-check` to bypass the gate (for example, offline runs).
+`--skip-model-check` to bypass the gate (for example, offline runs). The setup
+tool (`setup.bat` → `scripts/preflight.py`) shows the resolution outcome for every
+key without running the pipeline.
 
 ### Redaction (always-on final pass)
 
@@ -386,10 +402,12 @@ Approved DELTAs (one-for-one with `config/constitution.json` `amendments[]`):
 - **INFRA-024** — English module-name rules
 - **INFRA-025** — verification-cache subsystem rename (`verification_memory`
   → `verification_cache`, `ontologies/` → `snapshots/`)
-- **INFRA-026** — per-agent model selection (explicit current model ids per
-  agent in `agent_registry.json`, `model_tier`/`context_tier` removed,
-  key-layer model override removed, live deprecated-model gate with operator
-  approval)
+- **INFRA-026** — per-agent model selection (per-agent **family+version keys** in
+  `agent_registry.json`, `model_tier`/`context_tier` removed, key-layer model
+  override removed; live gate that **self-resolves** each family key to the
+  concrete dated id when exactly one live id matches — never written to a tracked
+  file — and falls back to the deprecated-model firewall (operator approval) when
+  zero or multiple/ambiguous ids match, on both producer and auditor sides)
 - **INFRA-027** — broad shared input-format family (`scripts/text_extract.py`
   gives every reader the same `.pdf`/`.docx`/`.html`/`.txt`/`.md`/`.rst`/
   `.log`/`.json` family; embedding store embeds all formats, not just PDF;
@@ -481,6 +499,63 @@ canonical log is the live `config/constitution.json`.
 
 ---
 
+## First-time setup
+
+For a brand-new operator, in order:
+
+1. **Clone the repo.**
+   ```bash
+   git clone <repo-url>
+   cd project-shimmer
+   ```
+2. **Create an `api_keys` folder one level *above* the repo** (a sibling of the
+   repo directory, not inside it):
+   ```
+   parent/
+     api_keys/        <- you create this
+     project-shimmer/ <- the repo
+   ```
+3. **Copy the config template into it and fill in your keys.** Create
+   `../api_keys/config.py` containing:
+   ```python
+   ANTHROPIC_API_KEY = "<your key>"   # required
+   OPENAI_API_KEY = "<your key>"      # required
+   BRAVE_API_KEY = "<your key>"       # optional, free tier
+   ```
+   (If you skip this step, the setup tool scaffolds a clearly-marked template at
+   that exact path and tells you what to fill in.)
+4. **Optionally set `SHIMMER_CONFIG_PATH`** if you want to keep `config.py`
+   somewhere other than `../api_keys/`. Point it at the `config.py` file (or at a
+   folder containing one); it overrides the default location.
+5. **Install the base Python dependencies** (manual, required, *before*
+   `setup.bat`):
+   ```bash
+   py -3.9 -m pip install -r requirements.txt
+   ```
+   `setup.bat` does **not** install these. It only ensures the two optional
+   libraries (`beautifulsoup4`, `langdetect`) are importable — it does **not**
+   install the base dependency set in `requirements.txt`. Run the command above
+   yourself first.
+6. **Double-click `setup.bat`** (repo root). It ensures the two optional libraries
+   above, checks the Qwen redaction backend and GPU, verifies the live model
+   lists, and prints a readiness report. The window pauses so you can read it.
+7. **Read the readiness report.** It states plainly what is ready and what stays
+   unproven until a real (paid) run.
+
+> **First-time setup can take a while — this is expected, not a fault.**
+> Installing the base dependencies (step 5) and pulling the Qwen model weights
+> (several gigabytes, downloaded on the first run that needs redaction) happen
+> **once**, on first setup / first run. They can take several minutes or longer on
+> a slow connection. **Do not interrupt them** — let each finish. Subsequent runs
+> reuse the installed packages and cached weights and start quickly.
+
+Your keys live **outside the repo** and are **never committed** — `.gitignore`
+blocks `**/config.py` and `api_keys*/`, and a pre-commit hook blocks any
+key-shaped string. No machine-specific paths or usernames are stored anywhere in
+the repo; the config location is resolved at runtime.
+
+---
+
 ## Quick start
 
 ```bash
@@ -489,15 +564,33 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-**API keys.** Loaded from an external `config.py` outside the
-repository. The relative path is in `.env_path`. Keys never appear in
-any tracked file. `scripts/guard_secrets.py` runs as a pre-commit hook
-(see `.githooks/pre-commit`) and blocks any commit containing a
-key-shaped string. Activate the hook after `git init`:
+**API keys.** Loaded from an external `config.py` that lives **outside** the
+repository and is never committed. The loader resolves it at runtime, in order:
+
+1. `$SHIMMER_CONFIG_PATH` — explicit override (a `config.py` file, or a directory
+   containing one);
+2. `../api_keys/config.py` — sibling folder one level above the repo root;
+3. `.env_path` — legacy repo-root pointer holding a relative path (fallback).
+
+No absolute path or username is stored in any tracked file. The reader copies out
+**API-key values only** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `BRAVE_API_KEY`);
+any `model = …` line in that file is ignored and can never influence model
+selection (model choice is owned solely by `config/agent_registry.json`).
+`scripts/guard_secrets.py` runs as a pre-commit hook (see `.githooks/pre-commit`)
+and blocks any commit containing a key-shaped string. Activate the hook after
+`git init`:
 
 ```bash
 git config core.hooksPath .githooks
 ```
+
+**Operator setup tool.** Double-click `setup.bat` (repo root) to run
+`scripts/preflight.py`: it locates/loads the config (scaffolding a template if
+absent), installs `beautifulsoup4` + `langdetect` if missing, reuses the existing
+Qwen reachability gate and GPU soft-check, queries each provider's live model
+list, and prints an honest readiness bill of health. It never runs the paid
+pipeline and never prints a key value. All logic lives in the Python module, so a
+future `setup.sh` / `setup.command` is a thin wrapper too.
 
 **Drop inputs.**
 

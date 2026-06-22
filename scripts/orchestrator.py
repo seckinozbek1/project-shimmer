@@ -73,7 +73,8 @@ class TopOrchestrator:
 
     @classmethod
     def boot(cls, root=None, *, interactive=True, operator_handler=None,
-             cost_tracker=None, run_adaptive_spawn=True, run_context=None):
+             cost_tracker=None, run_adaptive_spawn=True, run_context=None,
+             registry=None):
         root = root or project_root()
         # Per-run output isolation (Part XXVII §A): every run writes into its own
         # output/runs/<ts>__<id>/ folder. If the caller did not supply one, create
@@ -83,8 +84,13 @@ class TopOrchestrator:
             run_context = _rc.create_run(root)
         constitution = Constitution.load(root / "config" / "constitution.json")
         bus = MessageBus.open(run_context.bus_path())
-        with (root / "config" / "agent_registry.json").open("r", encoding="utf-8") as fh:
-            registry = json.load(fh).get("agents", {})
+        # A caller (the pipeline) may pass a registry whose family keys were already
+        # resolved to concrete live ids at the startup model-gate (INFRA-026). Use it
+        # so agents run the bound concrete ids. With no caller-supplied registry
+        # (verify gate, tests), read the tracked file as-is -- no live calls at boot.
+        if registry is None:
+            with (root / "config" / "agent_registry.json").open("r", encoding="utf-8") as fh:
+                registry = json.load(fh).get("agents", {})
         with (root / "config" / "agent_contracts.json").open("r", encoding="utf-8") as fh:
             contracts = json.load(fh).get("contracts", {})
         orch = cls(root=root, constitution=constitution, bus=bus, registry=registry,

@@ -36,7 +36,10 @@ REQUIRED_DIRS = [
     # Per-run output isolation (INFRA-032): per-run artifacts live under
     # output/runs/<run>/ now, not in fixed output/{deliverables,audit,logs}.
     "output", "output/runs",
-    "reference", "prompts", "scripts", "snapshots",
+    # Learned reference assets moved to durable/reference/ in the durable refactor
+    # (snapshot_manager actively clears any legacy top-level reference/); the old
+    # top-level "reference" dir is no longer required.
+    "prompts", "scripts", "snapshots",
     # Protected durable tree (INFRA-030) — lives outside the auto-cleaned output tree.
     "durable", "durable/cache", "durable/global", "durable/learnings",
     "durable/reference", "durable/governance",
@@ -107,6 +110,7 @@ def check_01_directory():
     allowed_root_files = {
         "genesis.md", "CLAUDE.md", "README.md", "requirements.txt",
         ".gitignore", "project_shimmer_cover.png", ".env_path",
+        "setup.bat",
     }
     extras = [p.name for p in ROOT.iterdir()
               if p.is_file() and p.name not in allowed_root_files]
