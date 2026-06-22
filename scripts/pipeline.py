@@ -778,6 +778,13 @@ _REDACTION_FAILURE = {
         "repair torch + transformers and the model) and re-run, or re-run with "
         "--no-redaction-override to consciously waive redaction for a non-sensitive run "
         "(logged to the governance ledger)."),
+    "no_resolvable_redaction": (
+        "returned items but none resolved to a valid redaction",
+        "The redactor returned a valid wrapper with items, but NONE resolved to a usable "
+        "redaction (a span plus a replacement / method=REDACT / a redaction category) — "
+        "e.g. redactions mis-tagged as kind='finding'. This is NOT a clean 'nothing to "
+        "redact' result, so it is BLOCKED rather than silently passed. Inspect the persisted "
+        "raw output, fix the clerk prompt/model, and re-run."),
 }
 
 
@@ -906,6 +913,81 @@ def _apply_redactions_to_master(master, redactions):
     return n
 
 
+_REDACTION_CATEGORY_HINTS = ("confiden", "redact", "privacy", "pii")
+
+
+def _norm_redaction_category(cat) -> str:
+    """Normalize a redaction category string so 'conv-confidentiality' and
+    'confidentiality' do not diverge: strip a leading 'conv-' and lowercase."""
+    c = str(cat or "").strip().lower()
+    if c.startswith("conv-"):
+        c = c[len("conv-"):]
+    return c
+
+
+def _is_redaction_proposal(it) -> bool:
+    """STRUCTURAL redaction detection (defense in depth): an item is a redaction
+    proposal if it carries a non-empty `span` AND any redaction signal — a
+    `replacement`, method=REDACT/MASK/REMOVE, or a redaction `category` — OR it is
+    explicitly kind='redaction'. A free-text `kind` label from a 7B is never the
+    SOLE gate on this safety-critical filter (a redaction mis-tagged kind='finding'
+    is still detected and applied)."""
+    if not isinstance(it, dict):
+        return False
+    if str(it.get("kind", "")).strip().lower() == "redaction":
+        return True
+    span = it.get("span")
+    if not (isinstance(span, str) and span.strip()):
+        return False
+    method = str(it.get("method", "")).strip().lower()
+    cat = _norm_redaction_category(it.get("category"))
+    return (bool(it.get("replacement"))
+            or method in ("redact", "mask", "remove")
+            or any(h in cat for h in _REDACTION_CATEGORY_HINTS))
+
+
+def _classify_clerk_items(items):
+    """Classify the clerk's decoded items into a redaction outcome (no model call):
+      ([], ...)                          -> ("NONE", [])     legitimate 'nothing to redact'
+      non-empty, none is a redaction     -> ("BLOCK", [])    non-empty-but-unresolved (LOUD, never silent)
+      one or more redaction proposals    -> ("PROPOSE", reds) the structurally-detected redactions
+    Each returned redaction has its category normalized."""
+    items = [it for it in (items or []) if isinstance(it, dict)]
+    if not items:
+        return ("NONE", [])
+    reds = []
+    for it in items:
+        if _is_redaction_proposal(it):
+            r = dict(it)
+            r["category"] = _norm_redaction_category(it.get("category"))
+            reds.append(r)
+    if not reds:
+        return ("BLOCK", [])
+    return ("PROPOSE", reds)
+
+
+def _persist_redactor_output(run_ctx, stage, doc_id, result) -> "str | None":
+    """Persist a redactor's raw + parsed output to the run audit dir on EVERY path
+    (not only on contract violation), so a future anomaly is diagnosable from disk,
+    not only the bus. Closes the raw_text_path=None gap on the ok/NONE path. Returns
+    the path, or None if run_ctx is unavailable / the write failed (best-effort,
+    never raises)."""
+    if run_ctx is None:
+        return None
+    try:
+        out_dir = run_ctx.audit_dir() / "redaction"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{stage}_{doc_id}.json"
+        path.write_text(json.dumps({
+            "stage": stage, "doc_id": doc_id, "ok": result.get("ok"),
+            "error": result.get("error"), "parsed": result.get("parsed"),
+            "raw_text": result.get("raw_text", ""),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(path)
+    except Exception:
+        return None
+
+
 def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_registry,
                       *, redaction_enabled=True):
     """FINAL always-on pass (Part II redaction agents, LAW-IV). Runs every run,
@@ -979,20 +1061,26 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
                           "redaction_rules": red_rules,
                           "document_text": _truncate(doc["text"], 4000)},
             run_objectives="Apply the OPERATOR REDACTION RULES (in your context) to the spans of "
-                           "this document and its deliverable. Redact every span that MATCHES a "
-                           "rule (one redaction item per matched span; set `span` to the matched "
-                           "text and `category` to the rule's category). Do NOT judge whether "
-                           "content is 'sensitive' on your own — apply the rules as written. If no "
-                           "span matches any rule, return items: [].",
+                           "this document and its deliverable. For EVERY span that matches a rule, emit "
+                           "one item with kind=\"redaction\" (NEVER kind=\"finding\"), span set to the "
+                           "exact matched text (verbatim), category set to the matched rule's category "
+                           "verbatim, replacement=\"[REDACTED]\", method=\"REDACT\", and rule_id set to "
+                           "the id of the rule that matched (e.g. CONV-006 or RED-DFLT-001). Emit ONE "
+                           "item per DISTINCT sensitive span — a named individual is its own span, "
+                           "separate from any company name or figure. Do NOT judge whether content is "
+                           "'sensitive' on your own — apply the rules as written. If and only if NO span "
+                           "matches any rule, return items: [].",
             channel="redaction", max_tokens=1024,
             convention_registry=convention_registry)
+        # Persist the clerk's raw + parsed output on EVERY path (INFRA-038 gap
+        # close): diagnosable from disk, not only the bus.
+        clerk_raw_path = _persist_redactor_output(run_ctx, "REDACT_CLERK", doc["id"], clerk_r)
         # LAW-IV strict gate (INFRA-037): the clerk result must be a CONTRACT-VALID
         # canonical wrapper, or the run BLOCKS and escalates — never silently
-        # skipped. A wrapper with items:[] is the valid 'nothing to redact' result.
-        # Distinguish a backend that could not be reached (redactor_unavailable)
-        # from a model that ran but produced unparseable / non-wrapper output
-        # (contract_violation). This strictness is LAW-IV-specific to redaction;
-        # phase-6 amendment salvage stays lenient.
+        # skipped. Distinguish a backend that could not be reached
+        # (redactor_unavailable) from a model that ran but produced unparseable /
+        # non-wrapper output (contract_violation). This strictness is LAW-IV-specific
+        # to redaction; phase-6 amendment salvage stays lenient.
         parsed = clerk_r.get("parsed")
         if not (clerk_r.get("ok") and is_envelope(parsed)):
             if not clerk_r.get("ok") and clerk_r.get("error") == "contract_violation":
@@ -1007,17 +1095,33 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
                 failure_kind = "contract_violation_fields"  # ok but not a wrapper
             esc = build_redaction_escalation(
                 doc_id=doc["id"], document_name=doc["name"], stage="REDACT_CLERK",
-                failure_kind=failure_kind, raw_output_path=clerk_r.get("raw_text_path"))
+                failure_kind=failure_kind,
+                raw_output_path=clerk_r.get("raw_text_path") or clerk_raw_path)
             _post_redaction_block(orch, esc)
             summary[doc["id"]] = {"redacted": False, "state": "BLOCKED",
                                   "failure_kind": esc["failure_kind"], "escalation": esc}
             continue
-        # Valid wrapper: the redaction items are kind='redaction' (decoded to the
-        # current revision per item_id). No items -> nothing to redact -> NONE.
-        redactions = [it for it in decode_items(parsed) if it.get("kind") == "redaction"]
-        if not redactions:
-            _post_redaction(orch, doc["id"], "REDACTION_NONE", {"screened_amendments": len(amendments)})
+        # Valid wrapper. Detect redactions STRUCTURALLY (span + replacement/method/
+        # category), not by the kind tag alone — a redaction mis-tagged kind='finding'
+        # is still applied. Classify into NONE / BLOCK / PROPOSE:
+        #   - items:[]                 -> legitimate REDACTION_NONE
+        #   - items but none resolve   -> BLOCK (non-empty-but-unresolved; never a
+        #                                 silent NONE — this was the silent-pass bug)
+        outcome, redactions = _classify_clerk_items(decode_items(parsed))
+        if outcome == "NONE":
+            _post_redaction(orch, doc["id"], "REDACTION_NONE",
+                            {"screened_amendments": len(amendments), "raw_output_path": clerk_raw_path})
             summary[doc["id"]] = {"redacted": False, "state": "NONE", "redactions": 0}
+            continue
+        if outcome == "BLOCK":
+            esc = build_redaction_escalation(
+                doc_id=doc["id"], document_name=doc["name"], stage="REDACT_CLERK",
+                failure_kind="no_resolvable_redaction",
+                raw_output_path=clerk_r.get("raw_text_path") or clerk_raw_path)
+            _post_redaction_block(orch, esc)
+            summary[doc["id"]] = {"redacted": False, "state": "BLOCKED",
+                                  "failure_kind": esc["failure_kind"], "escalation": esc,
+                                  "reason": "non-empty but no item resolved to a valid redaction"}
             continue
 
         authority = _build_wrapper("REDACT_AUTHORITY", orch, keys)

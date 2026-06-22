@@ -116,9 +116,11 @@
     "REDACT_CLERK": {
       "item_kind": "redaction (one item per proposed redaction; items:[] means nothing to redact)",
       "fields": {
+        "kind": "redaction (REQUIRED value — every redaction item MUST set kind=\"redaction\", never \"finding\")",
         "segment_id": "string", "tier": "T1 | T2",
-        "span": "string (the exact text to redact)", "category": "string (PII category)",
-        "replacement": "string (the replacement token)", "method": "string"
+        "span": "string (the exact text to redact, verbatim)", "category": "string (the matched rule's category, verbatim)",
+        "replacement": "string (the replacement token, e.g. [REDACTED])", "method": "string (REDACT)",
+        "rule_id": "string (the id of the operator/default rule that matched this span, e.g. CONV-006 or RED-DFLT-001)"
       },
       "required": ["span", "category"]
     },

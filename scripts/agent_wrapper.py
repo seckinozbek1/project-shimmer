@@ -623,9 +623,22 @@ class AgentWrapper:
             f"{cf}; required per item: {required}. "
             "(item_id, revision, ts are stamped by the runtime — you may omit them.)\n"
             f'Nothing to report -> {{"agent": "{self.name}", "doc_id": "<id>", "items": []}}\n'
-            f'One item -> {{"agent": "{self.name}", "doc_id": "<id>", "items": ['
-            '{"ref": "REF-0001", "kind": "finding", "confidence": "CONFIDENT", "ref_ids": ["REF-0001"]}]}\n'
+            f"One item -> {self._worked_item_example()}\n"
         )
+
+    def _worked_item_example(self) -> str:
+        """A per-agent worked one-item example. REDACT_CLERK gets a REDACTION-shaped
+        example (kind='redaction') so the generic 'finding' example never seeds it
+        (that bleed caused valid redactions to be tagged kind='finding' and dropped)."""
+        if self.name == "REDACT_CLERK":
+            return ('{"agent": "REDACT_CLERK", "doc_id": "<id>", "items": ['
+                    '{"ref": "REF-0006", "kind": "redaction", "confidence": "CONFIDENT", '
+                    '"span": "<exact text to redact, verbatim>", "category": "<the matched rule\'s category>", '
+                    '"replacement": "[REDACTED]", "method": "REDACT", '
+                    '"rule_id": "<id of the rule that matched, e.g. CONV-006 or RED-DFLT-001>", '
+                    '"ref_ids": ["REF-0006"]}]}')
+        return ('{"agent": "' + self.name + '", "doc_id": "<id>", "items": ['
+                '{"ref": "REF-0001", "kind": "finding", "confidence": "CONFIDENT", "ref_ids": ["REF-0001"]}]}')
 
     def prompt_template(self, context_text, work):
         does = "\n".join(f"- {d}" for d in self.spec.get("does", []))

@@ -1008,6 +1008,64 @@ def check_43_sensitivity_layer_gate():
     return _ok("sensitivity layer inactive; inert masking + dormant routing; override logged to ledger")
 
 
+def check_44_redaction_clerk_contract_pins():
+    """Redaction silent-pass fix: the REDACT_CLERK contract pins kind=redaction and
+    carries a rule_id attribution field, and the per-agent worked example is
+    redaction-shaped (not the generic kind='finding' example that bled in)."""
+    contracts = json.loads((CONFIG / "agent_contracts.json").read_text(encoding="utf-8"))["contracts"]
+    c = contracts.get("REDACT_CLERK", {})
+    if not str(c.get("item_kind", "")).strip().lower().startswith("redaction"):
+        return _fail("REDACT_CLERK item_kind does not pin 'redaction'")
+    fields = c.get("fields", {})
+    if "rule_id" not in fields:
+        return _fail("REDACT_CLERK contract has no rule_id attribution field")
+    if "redaction" not in str(fields.get("kind", "")).lower():
+        return _fail("REDACT_CLERK contract field 'kind' does not pin the value redaction")
+    # the worked example the clerk actually receives must be redaction-shaped
+    from agent_wrapper import AgentWrapper
+    class _S: pass
+    s = _S(); s.name = "REDACT_CLERK"; s.contract = {"fields": {}, "required": []}
+    s._worked_item_example = AgentWrapper._worked_item_example.__get__(s)
+    ex = s._worked_item_example()
+    if '"kind": "redaction"' not in ex or "rule_id" not in ex:
+        return _fail("REDACT_CLERK worked example is not redaction-shaped (kind=redaction + rule_id)")
+    # a non-redaction agent still gets the generic finding example
+    s2 = _S(); s2.name = "FACT_CHECKER"; s2.contract = {"fields": {}, "required": []}
+    s2._worked_item_example = AgentWrapper._worked_item_example.__get__(s2)
+    if '"kind": "finding"' not in s2._worked_item_example():
+        return _fail("non-redaction agent lost its finding example")
+    return _ok("REDACT_CLERK pins kind=redaction + rule_id; worked example is redaction-shaped")
+
+
+def check_45_redaction_structural_no_silent_none():
+    """Redaction silent-pass fix: phase_9 detects redactions STRUCTURALLY (span +
+    replacement/method/redaction-category), not by the kind tag alone, and never
+    silently resolves a non-empty-but-unresolved clerk result to NONE."""
+    from pipeline import _is_redaction_proposal, _classify_clerk_items, _norm_redaction_category
+    # the exact rehearsal failure: a real redaction MIS-TAGGED kind='finding' is detected
+    mistag = {"kind": "finding", "span": "رقم الهوية 0000-1111-2222", "category": "confidentiality",
+              "replacement": "[REDACTED]", "method": "REDACT", "rule_id": "CONV-006"}
+    if not _is_redaction_proposal(mistag):
+        return _fail("structural detection missed a redaction mis-tagged kind='finding'")
+    # a plain finding (no span / no redaction signal) is NOT a redaction
+    if _is_redaction_proposal({"kind": "finding", "ref": "R", "reasoning": "x"}):
+        return _fail("a non-redaction finding was treated as a redaction")
+    # classify: empty -> NONE; non-empty-unresolved -> BLOCK; mis-tagged -> PROPOSE
+    if _classify_clerk_items([])[0] != "NONE":
+        return _fail("empty items must be a legitimate NONE")
+    if _classify_clerk_items([{"kind": "finding", "ref": "R"}])[0] != "BLOCK":
+        return _fail("non-empty-but-unresolved must BLOCK, never silent NONE")
+    outcome, reds = _classify_clerk_items([mistag])
+    if outcome != "PROPOSE" or not reds:
+        return _fail("a structurally-valid redaction did not resolve to PROPOSE")
+    # category normalized: conv-confidentiality == confidentiality
+    if _norm_redaction_category("conv-confidentiality") != "confidentiality":
+        return _fail("category normalization failed (conv-confidentiality != confidentiality)")
+    if reds[0]["category"] != "confidentiality":
+        return _fail("classified redaction did not carry a normalized category")
+    return _ok("structural redaction detection + category normalization; non-empty-unresolved BLOCKS, empty is NONE")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -1062,6 +1120,8 @@ CHECKS = [
     ("41 conventions compile to operator redaction rules (INFRA-038)", check_41_redaction_rules),
     ("42 may_use_web enforced at search boundary (INFRA-038)", check_42_may_use_web_enforced),
     ("43 sensitivity layer built-but-inactive + logged override (INFRA-038)", check_43_sensitivity_layer_gate),
+    ("44 REDACT_CLERK contract pins kind=redaction + rule_id", check_44_redaction_clerk_contract_pins),
+    ("45 redaction detected structurally; no silent NONE", check_45_redaction_structural_no_silent_none),
 ]
 
 

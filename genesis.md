@@ -696,7 +696,14 @@ REDACTION — FINAL PASS, ALWAYS RUNS (pipeline phase 9; after synthesis, before
   REDACT_AUTHORITY approves tier 3-4 + adversarial test, REDACT_GATE final
   pass/fail) APPLY the operator redaction rules (LAW-IV's phrase "content marked
   for redaction") to document/deliverable spans at the output boundary — they do
-  NOT judge sensitivity themselves (INFRA-038). The full sensitivity layer
+  NOT judge sensitivity themselves (INFRA-038). A REDACT_CLERK redaction item pins
+  kind="redaction" and carries span, category, replacement, method, and a rule_id
+  (the matched rule: CONV-* operator rule or RED-DFLT-* default) for attribution.
+  phase_9 detects a redaction STRUCTURALLY (span + replacement / method=REDACT /
+  redaction category), not by the kind tag alone, so a mis-tagged redaction is
+  still applied; items:[] is a legitimate REDACTION_NONE, but clerk output that
+  resolves to no valid redaction BLOCKS and escalates (operator_escalation/v1) —
+  never a silent NONE. The full sensitivity layer
   (sensitivity as a first-class concept; masking from API/web; may_handle_sensitive
   routing) is built but UNWIRED and deferred, hard-gated by
   --sensitivity-layer-inactive-override. An approved + passed redaction
@@ -987,12 +994,14 @@ Before declaring complete, ALL must PASS:
 | 29 | CLAUDE.md points to this genesis file |
 | 30 | Full pipeline completes on a test document without crash |
 
-The implemented gate (`scripts/verify_session1.py`) runs **41** checks
+The implemented gate (`scripts/verify_session1.py`) runs **46** checks
 total, not 30: check 00 (`ast.parse` smoke over all modules) + checks
 1-30 above + checks 31-37 (Part XVIII Section F) + check 38 (embedding
-store build/query, Part XXI) + checks 39-40 (canonical inter-agent
-envelope invariant + highest-revision selection, INFRA-037).
-Arithmetic: 1 + 30 + 7 + 1 + 2 = 41.
+store build/query, Part XXI) + checks 39-45 (39-40 canonical inter-agent
+envelope + highest-revision, INFRA-037; 41-43 redaction rules + may_use_web
+enforcement + built-but-unwired sensitivity layer, INFRA-038; 44-45
+REDACT_CLERK kind/rule_id contract pins + structural redaction detection
+with no silent NONE). Arithmetic: 1 + 30 + 7 + 1 + 7 = 46.
 
 Print the table with Status and Detail columns. ALL must be PASS.
 

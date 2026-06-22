@@ -207,7 +207,21 @@ with an adversarial test, and `REDACT_GATE` gives the final pass/fail. An approv
 and passed redaction is applied through the amendments master and the `.md`/`.docx`
 are re-rendered from it, so the formats stay consistent (Part XXVII §E). Redaction
 writes only inside the run folder and never touches `durable/`; every decision is
-posted to the run bus.
+posted to the run bus. *(End-to-end AUTHORITY→GATE→applied is unproven until a paid
+run; a local clerk re-rehearsal confirms the clerk stage.)*
+
+**A clerk redaction item** pins `kind="redaction"` and carries `span`, `category`,
+`replacement`, `method`, and a `rule_id` identifying the rule that matched (e.g.
+`CONV-006` operator rule vs `RED-DFLT-*` default floor), so attribution is provable
+per span. The pipeline detects a redaction **structurally** — any item with a
+`span` plus a `replacement` / `method=REDACT` / a redaction `category` — not by the
+`kind` tag alone, so a redaction a 7B mis-tags (e.g. as `finding`) is still applied;
+a free-text model label is never the sole gate on a LAW-IV filter. Outcome
+semantics: `items: []` is a legitimate "nothing to redact" (`REDACTION_NONE`), but
+clerk output that resolves to **no** valid redaction is **not** a silent NONE — it
+**BLOCKS** and escalates via `operator_escalation/v1`. The redactor's raw + parsed
+output is persisted to the run audit dir on every path (NONE / proposed / BLOCKED)
+for diagnosis.
 
 **Full sensitivity philosophy — deferred (built but unwired).** The larger LAW-IV
 layer — the pipeline reasoning about *sensitivity as a first-class concept*,
@@ -560,7 +574,7 @@ pipeline interactively.
 Other entry points:
 
 ```bash
-py -3.9 -X utf8 scripts/verify_session1.py      # 41-check verification gate
+py -3.9 -X utf8 scripts/verify_session1.py      # 46-check verification gate
 py -3.9 scripts/bus_viewer.py --follow          # live bus + cost stream (latest run)
 py -3.9 scripts/bus_viewer.py --run NAME        # view a specific run folder
 ```
@@ -654,7 +668,7 @@ last.
 
 ## Verify gate
 
-`scripts/verify_session1.py` runs 41 structural invariants. Examples:
+`scripts/verify_session1.py` runs 46 structural invariants. Examples:
 
 - bus parses as JSONL and is append-only
 - every bus message has a non-empty `constitution_check`
@@ -672,8 +686,8 @@ last.
 py -3.9 -X utf8 scripts/verify_session1.py
 ```
 
-Latest run: **PASS=41, WARN=0, FAIL=0**. The gate is a standalone harness; a
-FAIL signals a regression to fix before relying on a run. PASS=41 is the
+Latest run: **PASS=46, WARN=0, FAIL=0**. The gate is a standalone harness; a
+FAIL signals a regression to fix before relying on a run. PASS=46 is the
 stability target; any drop flags regression before it leaves the local machine.
 The gate is non-mutating: it exercises components against a throwaway temporary
 run folder, so running it never writes into `output/runs/` or `durable/`.
@@ -807,7 +821,7 @@ project_shimmer/
 ├── reference/                       # static references
 └── scripts/
     ├── pipeline.py                  # entry point
-    ├── verify_session1.py           # 41-check gate
+    ├── verify_session1.py           # 46-check gate
     ├── agent_wrapper.py             # the single agent driver (by registry name)
     ├── guard_secrets.py             # pre-commit scanner
     └── ...
