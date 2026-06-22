@@ -755,6 +755,127 @@ async def phase_6_synthesis(orch, keys, op_docs, production, audit, conv_review,
 _REDACTION_PLACEHOLDER = "[REDACTED]"
 
 
+# --- Operator-escalation schema (stable shape for the future operator UI) ------
+# One structured object is the SINGLE source of truth for both the machine-readable
+# bus message and the human console notice, so the two can never disagree.
+ESCALATION_SCHEMA = "operator_escalation/v1"
+
+# internal failure_kind -> (message verb, remediation hint). The public taxonomy on
+# the object collapses the two contract_violation_* kinds to "contract_violation".
+_REDACTION_FAILURE = {
+    "contract_violation_parse": (
+        "failed to parse",
+        "The redactor ran but its output could not be parsed as JSON, even after "
+        "tolerant extraction. Inspect the raw output below, then re-run; if the local "
+        "model keeps emitting malformed output, repair or replace the Qwen redaction backend."),
+    "contract_violation_fields": (
+        "failed to satisfy the redaction contract",
+        "The redactor ran and returned JSON, but it does not match the required "
+        "redactions contract (segment_id / tier / redactions array). Inspect the raw "
+        "output below, then re-run; repair the model or prompt if it persists."),
+    "redactor_unavailable": (
+        "failed to reach the redaction backend",
+        "The local Qwen redaction backend was unreachable. Make it reachable (install/"
+        "repair torch + transformers and the model) and re-run, or re-run with "
+        "--no-redaction-override to consciously waive redaction for a non-sensitive run "
+        "(logged to the governance ledger)."),
+}
+
+
+def build_redaction_escalation(*, doc_id, document_name, stage, failure_kind, raw_output_path):
+    """Build the structured, machine-readable operator-escalation object for a
+    redaction that could not be confirmed clean (LAW-IV). Reusable schema
+    (`operator_escalation/v1`); the bus message and the console notice both derive
+    from this one object."""
+    public_kind = ("redactor_unavailable" if failure_kind == "redactor_unavailable"
+                   else "contract_violation")
+    verb, remediation = _REDACTION_FAILURE.get(
+        failure_kind, _REDACTION_FAILURE["contract_violation_fields"])
+    return {
+        "schema": ESCALATION_SCHEMA,
+        "kind": "REDACTION_BLOCKED",
+        "severity": "BLOCK",
+        "needs_operator": True,
+        "phase": "redaction",
+        "stage": stage,                  # the agent that failed, e.g. REDACT_CLERK
+        "doc_id": doc_id,
+        "document_name": document_name,
+        "failure_kind": public_kind,     # contract_violation | redactor_unavailable
+        "raw_output_path": raw_output_path,
+        "message": f"redaction did not pass: {verb}",
+        "remediation": remediation,
+    }
+
+
+def render_escalation_notice(esc):
+    """Human-readable BLOCK notice, derived from the SAME structured escalation
+    object so console and bus never disagree."""
+    lines = [
+        "",
+        "================ REDACTION BLOCK (LAW-IV) ================",
+        f"  BLOCKED deliverable: {esc['document_name']!r} (doc id: {esc['doc_id']})",
+        f"  Why:    {esc['message']}  (failure_kind = {esc['failure_kind']})",
+        f"  Where:  phase {esc['phase']!r}, agent {esc['stage']}",
+    ]
+    if esc.get("raw_output_path"):
+        lines.append(f"  Raw output: {esc['raw_output_path']}")
+    lines.append(f"  Next:   {esc['remediation']}")
+    lines.append("  This deliverable was NOT confirmed clean — it is BLOCKED, not skipped.")
+    lines.append("=========================================================")
+    return "\n".join(lines)
+
+
+def _post_redaction_block(orch, esc):
+    """Post the structured escalation to the bus (machine-readable, type ESCALATE)
+    AND print the human notice derived from the same object."""
+    orch._post_orchestrator(
+        recipient="OPERATOR", channel="escalation", msg_type="ESCALATE",
+        body={"event": "REDACTION_BLOCKED", "escalation": esc},
+        constitution_check={"laws_consulted": ["LAW-IV", "LAW-V"], "result": "UNRESOLVED",
+                            "resolution": "redaction could not be confirmed clean; operator must decide"})
+    print(render_escalation_notice(esc), file=sys.stderr, flush=True)
+
+
+def _redaction_result_block(orch, doc, result, *, stage, required_key):
+    """LAW-IV interim guard (hygiene): confirm a redaction agent's result is a
+    contract-valid dict carrying `required_key`. If it is, return None. If it is
+    NOT (run_task failed, or the output is not a dict, or the required field is
+    absent), emit the SAME strict LAW-IV BLOCK that REDACT_CLERK uses — reusing
+    build_redaction_escalation + _post_redaction_block (no second copy) — and
+    return the escalation dict so the caller can record state=BLOCKED and stop.
+
+    failure_kind distinguishes contract_violation (the agent RAN but returned an
+    unparseable / wrong-shape / field-missing result) from redactor_unavailable
+    (the agent did not run / backend unreachable).
+
+    INTERIM NOTE: this isinstance/has-key guard is the safe stopgap that stops a
+    non-dict (e.g. list) redactor output from either crashing the run
+    (`list.get(...)` -> AttributeError) or being silently coerced to
+    not-approved/failed (dropping proposed redactions so content could ship). The
+    canonical-envelope work (future operator-ratified DELTA) will REPLACE this
+    guard with the unified payload decoder; it is NOT the permanent design."""
+    parsed = result.get("parsed")
+    if result.get("ok") and isinstance(parsed, dict) and required_key in parsed:
+        return None
+    if not result.get("ok"):
+        if result.get("error") == "contract_violation":
+            miss = result.get("contract_missing") or []
+            parse_failed = any(str(m).startswith("json parse failure")
+                               or str(m) == "no JSON object found in output" for m in miss)
+            failure_kind = ("contract_violation_parse" if parse_failed
+                            else "contract_violation_fields")
+        else:
+            failure_kind = "redactor_unavailable"
+    else:
+        # ran (ok=True) but the result is not a contract-valid dict with the field
+        failure_kind = "contract_violation_fields"
+    esc = build_redaction_escalation(
+        doc_id=doc["id"], document_name=doc["name"], stage=stage,
+        failure_kind=failure_kind, raw_output_path=result.get("raw_text_path"))
+    _post_redaction_block(orch, esc)
+    return esc
+
+
 def _post_redaction(orch, doc_id, event, body):
     """Post an auditable redaction-decision event to the run bus (LAW-IV)."""
     orch._post_orchestrator(
@@ -819,7 +940,7 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
     if not redaction_enabled:
         for doc in op_docs:
             _post_redaction(orch, doc["id"], "REDACTION_SKIPPED", {"reason": "operator_waived"})
-            summary[doc["id"]] = {"redacted": False, "reason": "operator_waived"}
+            summary[doc["id"]] = {"redacted": False, "state": "SKIPPED", "reason": "operator_waived"}
         return summary
     for doc in op_docs:
         info = deliverables.get(doc["id"]) or {}
@@ -840,15 +961,44 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
                            "Redact ONLY what warrants it; if nothing does, return an empty "
                            "redactions list.",
             channel="redaction", max_tokens=1024)
+        # LAW-IV strict gate: the redaction result must be CONFIRMED as a
+        # contract-valid redactions array, or the run BLOCKS and escalates — it is
+        # never silently skipped. Distinguish a backend that could not be reached
+        # (redactor_unavailable) from a model that ran but produced unparseable /
+        # non-conforming output (contract_violation). This strictness is
+        # LAW-IV-specific to redaction; phase-6 amendment salvage stays lenient.
+        parsed = clerk_r.get("parsed")
         if not clerk_r.get("ok"):
-            _post_redaction(orch, doc["id"], "REDACTION_SKIPPED",
-                            {"stage": "REDACT_CLERK", "error": clerk_r.get("error")})
-            summary[doc["id"]] = {"redacted": False, "reason": "redactor_unavailable"}
+            if clerk_r.get("error") == "contract_violation":
+                miss = clerk_r.get("contract_missing") or []
+                parse_failed = any(str(m).startswith("json parse failure")
+                                   or str(m) == "no JSON object found in output" for m in miss)
+                failure_kind = ("contract_violation_parse" if parse_failed
+                                else "contract_violation_fields")
+            else:
+                failure_kind = "redactor_unavailable"
+            esc = build_redaction_escalation(
+                doc_id=doc["id"], document_name=doc["name"], stage="REDACT_CLERK",
+                failure_kind=failure_kind, raw_output_path=clerk_r.get("raw_text_path"))
+            _post_redaction_block(orch, esc)
+            summary[doc["id"]] = {"redacted": False, "state": "BLOCKED",
+                                  "failure_kind": esc["failure_kind"], "escalation": esc}
             continue
-        redactions = (clerk_r.get("parsed") or {}).get("redactions") or []
+        # ok=True but the shape must still be a dict carrying a redactions ARRAY;
+        # a bare list / missing array cannot be confirmed clean -> BLOCK.
+        if not (isinstance(parsed, dict) and isinstance(parsed.get("redactions"), list)):
+            esc = build_redaction_escalation(
+                doc_id=doc["id"], document_name=doc["name"], stage="REDACT_CLERK",
+                failure_kind="contract_violation_fields",
+                raw_output_path=clerk_r.get("raw_text_path"))
+            _post_redaction_block(orch, esc)
+            summary[doc["id"]] = {"redacted": False, "state": "BLOCKED",
+                                  "failure_kind": esc["failure_kind"], "escalation": esc}
+            continue
+        redactions = parsed.get("redactions") or []
         if not redactions:
             _post_redaction(orch, doc["id"], "REDACTION_NONE", {"screened_amendments": len(amendments)})
-            summary[doc["id"]] = {"redacted": False, "redactions": 0}
+            summary[doc["id"]] = {"redacted": False, "state": "NONE", "redactions": 0}
             continue
 
         authority = _build_wrapper("REDACT_AUTHORITY", orch, keys)
@@ -857,7 +1007,16 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
                           "redactions": redactions},
             run_objectives="Approve only defensible redactions; run the adversarial test.",
             channel="redaction", max_tokens=1024)
-        approved = bool(auth_r.get("ok") and (auth_r.get("parsed") or {}).get("approved"))
+        # LAW-IV strict guard (interim, see _redaction_result_block): a non-dict /
+        # field-missing / failed result BLOCKs instead of crashing on .get() or
+        # silently coercing to not-approved.
+        esc = _redaction_result_block(orch, doc, auth_r, stage="REDACT_AUTHORITY",
+                                      required_key="approved")
+        if esc is not None:
+            summary[doc["id"]] = {"redacted": False, "state": "BLOCKED",
+                                  "failure_kind": esc["failure_kind"], "escalation": esc}
+            continue
+        approved = bool(auth_r["parsed"].get("approved"))
 
         gate = _build_wrapper("REDACT_GATE", orch, keys)
         gate_r = gate.run_task(
@@ -865,12 +1024,20 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
                           "redactions": redactions, "approved": approved},
             run_objectives="Final pass/fail on the redaction set.",
             channel="redaction", max_tokens=512)
-        passed = bool(gate_r.get("ok") and (gate_r.get("parsed") or {}).get("pass"))
+        # LAW-IV strict guard (interim): same as above for the final gate.
+        esc = _redaction_result_block(orch, doc, gate_r, stage="REDACT_GATE",
+                                      required_key="pass")
+        if esc is not None:
+            summary[doc["id"]] = {"redacted": False, "state": "BLOCKED",
+                                  "failure_kind": esc["failure_kind"], "escalation": esc}
+            continue
+        passed = bool(gate_r["parsed"].get("pass"))
 
         if not (approved and passed):
             _post_redaction(orch, doc["id"], "REDACTION_NOT_APPLIED",
                             {"approved": approved, "passed": passed, "proposed": len(redactions)})
-            summary[doc["id"]] = {"redacted": False, "approved": approved, "passed": passed}
+            summary[doc["id"]] = {"redacted": False, "state": "NOT_APPLIED",
+                                  "approved": approved, "passed": passed}
             continue
 
         # Apply THROUGH the master, then re-render md/docx from it (canonical-master rule).
@@ -881,7 +1048,8 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
             category_for_conv=lambda c: _category_for_conv(c, convention_registry))
         _post_redaction(orch, doc["id"], "REDACTION_APPLIED",
                         {"redactions": len(redactions), "field_substitutions": n})
-        summary[doc["id"]] = {"redacted": True, "redactions": len(redactions), "substitutions": n}
+        summary[doc["id"]] = {"redacted": True, "state": "APPLIED",
+                              "redactions": len(redactions), "substitutions": n}
     return summary
 
 
@@ -1279,9 +1447,25 @@ def main(argv=None):
           f"{' (WAIVED for this run)' if not redaction_enabled else ''}", file=sys.stderr)
     redaction_summary = phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx,
                                           conv_registry_dict, redaction_enabled=redaction_enabled)
-    n_altered = sum(1 for v in redaction_summary.values() if v.get("redacted"))
-    print(f"[pipeline] redaction: {n_altered}/{len(redaction_summary)} deliverable(s) altered "
-          f"(phase always runs; agents decide adaptively)", file=sys.stderr)
+
+    def _count_state(*states):
+        return sum(1 for v in redaction_summary.values() if v.get("state") in states)
+    n_total = len(redaction_summary)
+    n_applied = sum(1 for v in redaction_summary.values() if v.get("redacted"))
+    n_none = _count_state("NONE")
+    n_blocked = _count_state("BLOCKED")
+    n_skipped = _count_state("SKIPPED")          # operator-waived (conscious no-op)
+    n_not_applied = _count_state("NOT_APPLIED")  # proposed but authority/gate declined
+    # BLOCKED is visibly distinct from "nothing to redact" (NONE) and from a waiver.
+    print(f"[pipeline] redaction: applied={n_applied} none={n_none} BLOCKED={n_blocked} "
+          f"skipped(waived)={n_skipped} not_applied={n_not_applied} of {n_total} "
+          f"(phase always runs; LAW-IV strict)", file=sys.stderr)
+    if n_blocked:
+        blocked_docs = [d for d, v in redaction_summary.items() if v.get("state") == "BLOCKED"]
+        print(f"[pipeline] LAW-IV BLOCK: {n_blocked} deliverable(s) could not be confirmed "
+              f"clean by redaction and were BLOCKED (not skipped): {blocked_docs}. "
+              f"See the REDACTION BLOCK notice(s) above and the ESCALATE message(s) on the "
+              f"bus (channel 'escalation'). Run exits non-zero.", file=sys.stderr)
 
     # Phase 8: persist
     print(f"\n[pipeline] phase 8: persist + run summary", file=sys.stderr)
@@ -1293,7 +1477,8 @@ def main(argv=None):
     print(f"  TOTAL:    ${final['total_cost_usd']:.4f}", file=sys.stderr)
     print(f"  calls: {final['total_calls']}  failures: {final['total_failures']}", file=sys.stderr)
     print(f"  bus messages: {summary.get('total', 0)}", file=sys.stderr)
-    return 0
+    # LAW-IV: a redaction BLOCK must not be silent — fail the run so it surfaces.
+    return 5 if n_blocked else 0
 
 
 if __name__ == "__main__":

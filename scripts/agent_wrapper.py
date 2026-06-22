@@ -129,6 +129,44 @@ def load_api_keys() -> dict[str, str]:
 def _now(): return datetime.now(timezone.utc).isoformat()
 
 
+def _match_balanced(text, start):
+    """Return the index of the close delimiter matching the JSON opener at
+    text[start], or None if unbalanced. Braces/brackets inside JSON string
+    literals are ignored (string state + backslash escapes are tracked)."""
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if esc: esc = False
+            elif c == "\\": esc = True
+            elif c == '"': in_str = False
+            continue
+        if c == '"': in_str = True
+        elif c in "{[": depth += 1
+        elif c in "}]":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _iter_balanced_json(text):
+    """Yield each top-level balanced {...} / [...] span in document order. Nested
+    structures inside a span are part of that span, not yielded separately. Used to
+    recover JSON from output that wraps it in prose or emits several fragments."""
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] in "{[":
+            end = _match_balanced(text, i)
+            if end is not None:
+                yield text[i:end + 1]
+                i = end + 1
+                continue
+        i += 1
+
+
 @dataclass
 class CallResult:
     backend: str
@@ -337,26 +375,12 @@ class AgentWrapper:
             return self.call_qwen(full, **kwargs)
         return CallResult(self.backend, "?", "", ok=False, error=f"unknown backend {self.backend!r}")
 
-    def parse_contract_output(self, raw):
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.lower().startswith("json"): text = text[4:].strip()
-        try:
-            obj = json.loads(text)
-        except json.JSONDecodeError:
-            start, end = text.find("{"), text.rfind("}")
-            arr_start, arr_end = text.find("["), text.rfind("]")
-            cand = None
-            if arr_start >= 0 and arr_end > arr_start and (start < 0 or arr_start < start):
-                cand = text[arr_start:arr_end + 1]
-            elif start >= 0 and end > start:
-                cand = text[start:end + 1]
-            if cand:
-                try: obj = json.loads(cand)
-                except json.JSONDecodeError as e: return None, [f"json parse failure: {e}"]
-            else:
-                return None, ["no JSON object found in output"]
+    def _contract_missing(self, obj):
+        """Required-field validation of a parsed object against this agent's
+        contract. Returns the list of missing fields; an empty list means the
+        object satisfies contract.required (and the AMENDMENT_DRAFTER nested
+        requirements). This is the single source of 'does it satisfy the
+        contract', reused by both the strict and tolerant parse paths."""
         missing = []
         required = self.contract.get("required", [])
         if isinstance(obj, list):
@@ -369,6 +393,9 @@ class AgentWrapper:
             for rkey in required:
                 if rkey not in obj:
                     missing.append(rkey)
+        elif required:
+            # a bare scalar can never satisfy a field-bearing contract
+            missing.append("(output is not an object or array)")
         # AMENDMENT_DRAFTER: each amendment object inside .amendments must
         # carry the location / convention_ref / original_text / action /
         # severity / comment fields. A missing or None value here is a
@@ -385,7 +412,60 @@ class AgentWrapper:
                     for field_name in nested_required:
                         if field_name not in a or a.get(field_name) in (None, ""):
                             missing.append(f"amendments[{i}].{field_name}")
-        return obj, missing
+        return missing
+
+    def parse_contract_output(self, raw):
+        """Parse the model response into the agent's contract object.
+
+        (1) STRICT fast path: whole-response json.loads — unchanged behavior for
+            already-clean output.
+        (2) TOLERANT scan (only if strict fails): find ALL balanced top-level JSON
+            candidates (objects and arrays, ignoring delimiters inside strings) and
+            return the FIRST that satisfies contract.required. If none satisfies but
+            at least one parses, return the first parseable candidate WITH its
+            missing-field list (so the violation is still reported, never masked).
+            If nothing parses, return (None, [parse failure])."""
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lower().startswith("json"): text = text[4:].strip()
+        # (1) strict fast path
+        try:
+            obj = json.loads(text)
+            return obj, self._contract_missing(obj)
+        except json.JSONDecodeError:
+            pass
+        # (2) tolerant scan over balanced candidates. Prefer a NON-EMPTY candidate
+        # that satisfies the contract (an empty [] / {} satisfies a per-item
+        # contract only vacuously and carries no required content, so it must not
+        # mask a real object that appears later in messy output).
+        first_satisfying_empty = None
+        first_parsed = None
+        first_missing = None
+        last_error = None
+        found_candidate = False
+        for cand in _iter_balanced_json(text):
+            found_candidate = True
+            try:
+                obj = json.loads(cand)
+            except json.JSONDecodeError as e:
+                last_error = e
+                continue
+            missing = self._contract_missing(obj)
+            if not missing:
+                if obj not in ([], {}):
+                    return obj, []  # first non-empty candidate that satisfies the contract
+                if first_satisfying_empty is None:
+                    first_satisfying_empty = obj
+            if first_parsed is None:
+                first_parsed, first_missing = obj, missing  # best-effort fallback
+        if first_satisfying_empty is not None:
+            return first_satisfying_empty, []
+        if first_parsed is not None:
+            return first_parsed, first_missing
+        if found_candidate and last_error is not None:
+            return None, [f"json parse failure: {last_error}"]
+        return None, ["no JSON object found in output"]
 
     def post_to_bus(self, *, recipient, channel, msg_type, body, constitution_check, sender_role="agent"):
         return self.bus.post({
@@ -564,6 +644,7 @@ class AgentWrapper:
             )
             return {"ok": False, "agent": self.name, "backend": result.backend, "model": result.model,
                     "parsed": parsed, "raw_text": result.raw_text, "contract_missing": missing,
+                    "raw_text_path": str(raw_text_path) if raw_text_path else None,
                     "error": "contract_violation"}
         self.post_to_bus(recipient=recipient, channel=channel, msg_type="INFORM",
                          body={"event": "AGENT_OUTPUT", "backend": result.backend, "model": result.model,
