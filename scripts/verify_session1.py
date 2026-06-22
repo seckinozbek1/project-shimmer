@@ -914,6 +914,83 @@ def check_40_highest_revision():
     return _ok("current revision selected per item_id (tie-break latest ts)")
 
 
+def check_41_redaction_rules():
+    """INFRA-038: conventions compile into operator REDACTION RULES that the
+    redactors APPLY (no model sensitivity judgment). The helper returns built-in
+    defaults when no confidentiality convention exists, and operator rules when
+    they do (confidentiality/redaction category or action=redact)."""
+    from convention_parser import redaction_rules, DEFAULT_REDACTION_RULES, REDACTION_CATEGORIES
+    defaults = redaction_rules({"conventions": []})
+    if not defaults or len(defaults) != len(DEFAULT_REDACTION_RULES):
+        return _fail("default redaction rules not returned for an empty registry")
+    if not all(r.get("action") == "redact" for r in defaults):
+        return _fail("default rules are not action=redact")
+    reg = {"conventions": [
+        {"id": "CONV-090", "category": "confidentiality", "rule": "redact ID numbers",
+         "action": "redact", "severity": "required"},
+        {"id": "CONV-001", "category": "identity", "rule": "x", "action": "flag", "severity": "required"}]}
+    op = redaction_rules(reg)
+    ids = {r["id"] for r in op}
+    if "CONV-090" not in ids or "CONV-001" in ids:
+        return _fail(f"operator redaction-rule selection wrong: {ids}")
+    if "confidentiality" not in REDACTION_CATEGORIES:
+        return _fail("confidentiality not a redaction category")
+    return _ok("conventions compile into operator redaction rules (defaults + operator-authored)")
+
+
+def check_42_may_use_web_enforced():
+    """INFRA-038: may_use_web is a REAL, consumed control. search_router refuses a
+    roster agent whose flag is false, permits a web-enabled agent past the guard,
+    and permits a system/intake caller (agent=None). Confirms redactors (false)
+    can never be routed to the web."""
+    from search_router import SearchRouter, agent_may_use_web
+    registry = json.loads((CONFIG / "agent_registry.json").read_text())["agents"]
+    if agent_may_use_web(registry, "REDACT_CLERK"):
+        return _fail("REDACT_CLERK must not have may_use_web")
+    if not agent_may_use_web(registry, "FACT_CHECKER"):
+        return _fail("FACT_CHECKER should have may_use_web")
+    r = SearchRouter.open(ROOT)
+    try:
+        r.search("x", agent="REDACT_CLERK")
+        return _fail("non-web agent was NOT refused at the search boundary")
+    except PermissionError:
+        pass
+    # the guard for a web-enabled agent must pass (we do not run the live query here)
+    if not agent_may_use_web(r.registry, "FACT_CHECKER"):
+        return _fail("router registry not loaded / FACT_CHECKER not web-enabled")
+    return _ok("may_use_web enforced at the search boundary (redactors refused; web agents allowed)")
+
+
+def check_43_sensitivity_layer_gate():
+    """INFRA-038: the full LAW-IV sensitivity layer is BUILT BUT UNWIRED (inactive),
+    and its inactive-state override is recorded to the governance ledger — mirroring
+    the redaction-waiver pattern. The masking hook is inert (pass-through) while
+    inactive and never invoked by control flow."""
+    import sensitivity_layer
+    if sensitivity_layer.is_active():
+        return _fail("sensitivity layer must be INACTIVE in Stage 3a (built-but-unwired)")
+    # inert masking hook is a transparent pass-through while inactive
+    sentinel = {"x": 1}
+    if sensitivity_layer.mask_for_external(sentinel) is not sentinel:
+        return _fail("inactive masking hook must be a pass-through")
+    # dormant routing predicate reads the registry flag
+    registry = json.loads((CONFIG / "agent_registry.json").read_text())["agents"]
+    if not sensitivity_layer.may_handle_sensitive(registry, "REDACT_CLERK"):
+        return _fail("REDACT_CLERK should be may_handle_sensitive (dormant on-switch)")
+    if sensitivity_layer.may_handle_sensitive(registry, "PROCESSOR"):
+        return _fail("PROCESSOR should not be may_handle_sensitive")
+    # logged override writes to the governance ledger (write to a throwaway run root)
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        p = sensitivity_layer.record_sensitivity_override(Path(tmp), "verify-run", reason="test")
+        if not p.exists() or "sensitivity_overrides" not in p.name:
+            return _fail("override not written to the governance ledger")
+        rec = json.loads(p.read_text(encoding="utf-8").splitlines()[0])
+        if rec.get("event") != "SENSITIVITY_LAYER_INACTIVE_OVERRIDE":
+            return _fail("override ledger record malformed")
+    return _ok("sensitivity layer inactive; inert masking + dormant routing; override logged to ledger")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -965,6 +1042,9 @@ CHECKS = [
     ("38 embedding store build + query (Part XXI graceful)", check_38_embedding_store),
     ("39 canonical inter-agent envelope enforced (INFRA-037)", check_39_canonical_envelope),
     ("40 highest-revision item selection (INFRA-037)", check_40_highest_revision),
+    ("41 conventions compile to operator redaction rules (INFRA-038)", check_41_redaction_rules),
+    ("42 may_use_web enforced at search boundary (INFRA-038)", check_42_may_use_web_enforced),
+    ("43 sensitivity layer built-but-inactive + logged override (INFRA-038)", check_43_sensitivity_layer_gate),
 ]
 
 

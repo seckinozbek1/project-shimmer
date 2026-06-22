@@ -39,7 +39,8 @@ from agent_wrapper import (AgentWrapper, load_api_keys, decode_items,
                            current_items, make_envelope, is_envelope)
 import amendment_render
 from audit_synthesizer import AuditSynthesizer
-from convention_parser import parse_conventions, write_registry
+from convention_parser import parse_conventions, write_registry, redaction_rules
+import sensitivity_layer
 from corpus_validator import extract_distinctive_terms, validate_corpus_entry
 import embedding_store
 from cost_tracker import CostTracker, estimate_cost
@@ -909,8 +910,9 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
                       *, redaction_enabled=True):
     """FINAL always-on pass (Part II redaction agents, LAW-IV). Runs every run,
     regardless of whether anything is redacted. The three Qwen agents screen each
-    document's deliverables and decide ADAPTIVELY what (if anything) to redact
-    (simplest-sufficient: only what warrants it):
+    document's deliverables and APPLY the operator redaction rules (LAW-IV's own
+    phrase, "content marked for redaction") — the model does NOT judge sensitivity
+    on its own; it applies the rules the operator declared (INFRA-038):
 
       REDACT_CLERK   proposes tier 1-2 redactions,
       REDACT_AUTHORITY approves tier 3-4 + adversarial test,
@@ -936,6 +938,10 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
             _post_redaction(orch, doc["id"], "REDACTION_SKIPPED", {"reason": "operator_waived"})
             summary[doc["id"]] = {"redacted": False, "state": "SKIPPED", "reason": "operator_waived"}
         return summary
+    # OPERATOR REDACTION RULES (INFRA-038): the machine-usable rule set the
+    # redactors APPLY (operator conventions in a confidentiality/redaction category,
+    # else the built-in defaults). Wired into the clerk work_payload below.
+    red_rules = redaction_rules(convention_registry)
     for doc in op_docs:
         info = deliverables.get(doc["id"]) or {}
         master_path = info.get("amendments_json")
@@ -949,12 +955,21 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
 
         clerk = _build_wrapper("REDACT_CLERK", orch, keys)
         clerk_r = clerk.run_task(
-            work_payload={"task": "screen_deliverable", "document_id": doc["id"],
-                          "document_name": doc["name"], "amendments": amendments},
-            run_objectives="Screen this deliverable for sensitive content (LAW-IV). "
-                           "Redact ONLY what warrants it; if nothing does, return an empty "
-                           "redactions list.",
-            channel="redaction", max_tokens=1024)
+            work_payload={"task": "apply_redaction_rules", "document_id": doc["id"],
+                          "document_name": doc["name"], "amendments": amendments,
+                          # Operator redaction rules + the document spans to apply
+                          # them to (minimal read-radius unblind for rule application;
+                          # the full ladder radius is Stage 3b).
+                          "redaction_rules": red_rules,
+                          "document_text": _truncate(doc["text"], 4000)},
+            run_objectives="Apply the OPERATOR REDACTION RULES (in your context) to the spans of "
+                           "this document and its deliverable. Redact every span that MATCHES a "
+                           "rule (one redaction item per matched span; set `span` to the matched "
+                           "text and `category` to the rule's category). Do NOT judge whether "
+                           "content is 'sensitive' on your own — apply the rules as written. If no "
+                           "span matches any rule, return items: [].",
+            channel="redaction", max_tokens=1024,
+            convention_registry=convention_registry)
         # LAW-IV strict gate (INFRA-037): the clerk result must be a CONTRACT-VALID
         # canonical wrapper, or the run BLOCKS and escalates — never silently
         # skipped. A wrapper with items:[] is the valid 'nothing to redact' result.
@@ -1152,6 +1167,10 @@ def main(argv=None):
                         help="per-run waiver: declare THIS run non-sensitive and run with NO "
                              "redaction (required to proceed when the Qwen backend is unavailable; "
                              "each use is logged to the governance ledger)")
+    parser.add_argument("--sensitivity-layer-inactive-override", action="store_true",
+                        help="per-run override: the FULL LAW-IV sensitivity layer is built but "
+                             "UNWIRED (INFRA-038); declare THIS run non-sensitive to proceed with "
+                             "it inactive. Each use is logged to the governance ledger.")
     args = parser.parse_args(argv)
 
     # Snapshot shortcuts: take action and exit.
@@ -1186,6 +1205,38 @@ def main(argv=None):
     # Durable/protected assets live under durable/ and are never written here.
     run_ctx = run_context_mod.create_run(ROOT)
     print(f"[pipeline] run folder: {run_ctx.run_dir.relative_to(ROOT)}", file=sys.stderr)
+
+    # Sensitivity-layer inactive HARD GATE (INFRA-038). The FULL LAW-IV sensitivity
+    # layer (reasoning about sensitivity as a first-class concept; masking sensitive
+    # content from API/web; may_handle_sensitive routing) is BUILT BUT UNWIRED. Until
+    # it is activated, the run REFUSES to start unless the operator declares THIS run
+    # non-sensitive via --sensitivity-layer-inactive-override, mirroring the Qwen
+    # redaction hard-gate-plus-logged-override. (Stage 3a applies operator redaction
+    # rules locally; the full philosophy is deferred — see README.)
+    if not sensitivity_layer.is_active():
+        print("[sensitivity-gate] WARNING: the full LAW-IV sensitivity layer is BUILT BUT "
+              "INACTIVE (INFRA-038); the pipeline reasoning about sensitivity as a first-class "
+              "concept is deferred. Stage 3a applies operator redaction rules locally only.",
+              file=sys.stderr)
+        if not args.sensitivity_layer_inactive_override:
+            print("[sensitivity-gate] STOP: refusing to start with the full sensitivity layer "
+                  "inactive. Re-run with --sensitivity-layer-inactive-override to declare THIS run "
+                  "non-sensitive and proceed (logged to the governance ledger).", file=sys.stderr)
+            return 6
+        if not args.non_interactive:
+            try:
+                confirm = input("--sensitivity-layer-inactive-override: declare THIS run "
+                                "NON-SENSITIVE and proceed with the full sensitivity layer "
+                                "inactive? (yes/no): ").strip().lower()
+            except EOFError:
+                confirm = "no"
+            if confirm not in {"yes", "y"}:
+                print("[sensitivity-gate] override not confirmed; aborting.", file=sys.stderr)
+                return 6
+        led = sensitivity_layer.record_sensitivity_override(
+            ROOT, run_ctx.run_id, reason="operator_declared_non_sensitive_layer_inactive")
+        print(f"[sensitivity-gate] OVERRIDE accepted for this run; logged to {led.name}.",
+              file=sys.stderr)
 
     # Reset toggles. With per-run folders each run starts empty, so these only
     # matter if a caller re-points at an existing run; they act on this run's paths.
@@ -1413,8 +1464,9 @@ def main(argv=None):
                       file=sys.stderr)
 
     # Phase 9: redaction (ALWAYS runs — final pass over the deliverables, LAW-IV).
-    # The Qwen agents decide adaptively what (if anything) to redact; any approved
-    # redaction flows through the amendments master and re-renders md/docx.
+    # The Qwen agents APPLY the operator redaction rules to spans (INFRA-038); they
+    # do not judge sensitivity. Any approved redaction flows through the amendments
+    # master and re-renders md/docx.
     print(f"[pipeline] phase 9: redaction screening"
           f"{' (WAIVED for this run)' if not redaction_enabled else ''}", file=sys.stderr)
     redaction_summary = phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx,

@@ -48,6 +48,7 @@ durable/learnings/spawn_log.jsonl
 durable/governance/model_approvals.json
 durable/governance/constitution_guard_log.jsonl
 durable/governance/redaction_waivers.jsonl
+durable/governance/sensitivity_overrides.jsonl
 
 # Re-includes (must come after the rules they negate)
 !scripts/guard_secrets.py

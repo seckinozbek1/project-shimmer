@@ -36,11 +36,51 @@ _SEVERITY_PATTERNS = [
 
 
 _ACTION_PATTERNS = [
+    ("redact",   re.compile(r"\b(redact|mask|conceal|withhold|remove\s+from\s+output|do not (?:print|publish|disclose|reveal))\b", re.IGNORECASE)),
     ("reject",   re.compile(r"\b(reject|do not accept|disallow|prohibit)\b", re.IGNORECASE)),
     ("rephrase", re.compile(r"\b(rephrase|rewrite|replace|substitute|use\s+\S+\s+instead)\b", re.IGNORECASE)),
     ("flag",     re.compile(r"\b(flag|alert|warn|require\s+review|escalate)\b", re.IGNORECASE)),
     ("annotate", re.compile(r"\b(annotate|note|comment|footnote|add\s+citation)\b", re.IGNORECASE)),
 ]
+
+# A convention in any of these categories is an OPERATOR REDACTION RULE: a
+# machine-usable instruction the redactors APPLY to document spans (LAW-IV's own
+# phrase, "content marked for redaction"). This replaces the phantom of a model
+# JUDGING what is "sensitive"; the operator declares the rules, the redactors apply
+# them. Category names are normalized lowercase (see _normalize_category).
+REDACTION_CATEGORIES = {"confidentiality", "redaction", "privacy", "pii"}
+
+# Built-in redaction rules used when the operator has not (yet) authored a
+# confidentiality convention. These are the category list this layer ships with;
+# the operator's own conventions, when present, take precedence (are merged ahead).
+DEFAULT_REDACTION_RULES = [
+    {"id": "RED-DFLT-001", "category": "confidentiality", "action": "redact", "severity": "required",
+     "rule": "National identity / passport / tax / similar government ID numbers."},
+    {"id": "RED-DFLT-002", "category": "confidentiality", "action": "redact", "severity": "required",
+     "rule": "Named natural persons (private individuals) attached to identifying data."},
+    {"id": "RED-DFLT-003", "category": "confidentiality", "action": "redact", "severity": "required",
+     "rule": "Confidential turnover / revenue / financial figures not in the public record."},
+    {"id": "RED-DFLT-004", "category": "confidentiality", "action": "redact", "severity": "required",
+     "rule": "Business secrets / proprietary commercial terms marked confidential."},
+]
+
+
+def redaction_rules(registry) -> list:
+    """Return the OPERATOR REDACTION RULES as machine-usable dicts: every
+    convention whose category is a redaction category OR whose action is 'redact'.
+    Operator-authored rules come first; if none exist, DEFAULT_REDACTION_RULES is
+    returned so the redactors always have a rule set to APPLY (never a model
+    sensitivity judgment). Each rule: {id, category, rule, severity, action}."""
+    convs = (registry.get("conventions") if isinstance(registry, dict) else None) or []
+    out = []
+    for c in convs:
+        cat = str(c.get("category", "")).strip().lower()
+        act = str(c.get("action", "")).strip().lower()
+        if cat in REDACTION_CATEGORIES or act == "redact":
+            out.append({"id": c.get("id"), "category": cat or "confidentiality",
+                        "rule": c.get("rule", ""), "severity": c.get("severity", "required"),
+                        "action": "redact"})
+    return out or list(DEFAULT_REDACTION_RULES)
 
 
 _DEFAULT_CATEGORY = "unclassified"

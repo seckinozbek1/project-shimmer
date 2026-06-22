@@ -694,8 +694,12 @@ PHASE 7 — LEARN
 REDACTION — FINAL PASS, ALWAYS RUNS (pipeline phase 9; after synthesis, before persist; LAW-IV)
   The three Qwen redaction agents (REDACT_CLERK proposes tier 1-2,
   REDACT_AUTHORITY approves tier 3-4 + adversarial test, REDACT_GATE final
-  pass/fail) screen each document's deliverables at the output boundary and
-  decide ADAPTIVELY what, if anything, to redact. An approved + passed redaction
+  pass/fail) APPLY the operator redaction rules (LAW-IV's phrase "content marked
+  for redaction") to document/deliverable spans at the output boundary — they do
+  NOT judge sensitivity themselves (INFRA-038). The full sensitivity layer
+  (sensitivity as a first-class concept; masking from API/web; may_handle_sensitive
+  routing) is built but UNWIRED and deferred, hard-gated by
+  --sensitivity-layer-inactive-override. An approved + passed redaction
   is applied THROUGH the amendments master and the md/docx are re-rendered from
   it, so the formats stay consistent (Part XXVII §E). Run-scoped only — never
   touches durable/. Every decision is posted to the run bus. Degrades safely if

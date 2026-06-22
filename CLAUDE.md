@@ -19,6 +19,7 @@ Stored outside the repository. The relative path to the local `config.py` is in 
 ## Rules that override everything
 
 - LAW-IV (privacy) outranks LAW-0 (operator sovereignty) for sensitive-content handling. No exceptions.
+- Redaction applies OPERATOR-DEFINED RULES locally (LAW-IV's phrase "content marked for redaction"): the operator declares a `confidentiality`/`redaction` convention category and the Qwen redactors apply those rules to spans — the model does NOT judge "sensitivity" itself (INFRA-038). The FULL sensitivity philosophy (sensitivity as a first-class concept; masking content out of every API/web call; `may_handle_sensitive` routing) is BUILT BUT UNWIRED (`scripts/sensitivity_layer.py`) and DEFERRED to full deployment; while inactive the run hard-gates and refuses to start unless the operator passes `--sensitivity-layer-inactive-override` (logged to the governance ledger). `may_use_web` is an enforced control: an agent reaches the web only if its registry flag permits it.
 - The operator decides every escalation. No silent self-modification.
 - No domain-specific content in `scripts/`. Domain knowledge lives in `config/` (compiled conventions) and `durable/` (learned assets spawned from `input/context/`: `durable/learnings/` and `durable/reference/`).
 - Every convention review finding must cite at least one CONV-* and at least one REF-*.

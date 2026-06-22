@@ -195,14 +195,31 @@ key without running the pipeline.
 ### Redaction (always-on final pass)
 
 The last pipeline phase always runs, every run, over the produced deliverables
-(LAW-IV). The three Qwen agents screen each document's deliverables at the output
-boundary and decide adaptively what, if anything, to redact — `REDACT_CLERK`
-proposes tier 1-2 redactions, `REDACT_AUTHORITY` approves tier 3-4 with an
-adversarial test, and `REDACT_GATE` gives the final pass/fail. An approved and
-passed redaction is applied through the amendments master and the `.md`/`.docx`
-are re-rendered from it, so the formats stay consistent (Part XXVII §E).
-Redaction writes only inside the run folder and never touches `durable/`; every
-decision is posted to the run bus.
+(LAW-IV). The three Qwen agents **apply the operator-defined redaction rules** at
+the output boundary — they do **not** judge "sensitivity" on their own. LAW-IV's
+own phrase, *"content marked for redaction,"* is the basis: the operator declares
+the rules (a `confidentiality`/`redaction` convention category — national ID
+numbers, named individuals, confidential turnover/financial figures, business
+secrets; built-in defaults apply until the operator authors their own), and the
+redactors apply them to document spans (INFRA-038). `REDACT_CLERK` proposes tier
+1-2 redactions for spans that match a rule, `REDACT_AUTHORITY` approves tier 3-4
+with an adversarial test, and `REDACT_GATE` gives the final pass/fail. An approved
+and passed redaction is applied through the amendments master and the `.md`/`.docx`
+are re-rendered from it, so the formats stay consistent (Part XXVII §E). Redaction
+writes only inside the run folder and never touches `durable/`; every decision is
+posted to the run bus.
+
+**Full sensitivity philosophy — deferred (built but unwired).** The larger LAW-IV
+layer — the pipeline reasoning about *sensitivity as a first-class concept*,
+masking sensitive content out of every API/web call, and routing sensitive
+handling only to `may_handle_sensitive` agents — is **scaffolded but inactive**
+(`scripts/sensitivity_layer.py`, INFRA-038) and deferred to full deployment. While
+it is inactive the pipeline **refuses to start** unless the operator declares the
+run non-sensitive with `--sensitivity-layer-inactive-override` (each use logged to
+`durable/governance/sensitivity_overrides.jsonl`) — the same hard-gate-plus-logged-
+override discipline as the Qwen redaction gate. `may_use_web` is now a real,
+enforced control: an agent reaches the web only if its registry flag permits it
+(redactors never can).
 
 **Qwen-required startup gate.** Because redaction always runs, the pipeline
 checks at boot — before any agent runs — that the local Qwen backend is

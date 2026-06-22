@@ -110,7 +110,9 @@ def assemble_context(
     objectives_text = _truncate_by_tokens(run_objectives, 200)
     precedents_text = _render_precedents(constitution, relevant_precedent_ids, budget=500 if backend != "qwen_local" else 0)
     charter_text = _render_charter(charter) if charter else ""
-    convention_text = _render_conventions(convention_registry, budget=1500 if backend != "qwen_local" else 0)
+    # qwen_local gets a non-zero conventions budget (INFRA-038) so OPERATOR
+    # REDACTION RULES reach the redactors; other backends get the fuller budget.
+    convention_text = _render_conventions(convention_registry, budget=1500 if backend != "qwen_local" else 800)
     reference_index_text = _render_reference_index(reference_index_excerpt, budget=1500 if backend != "qwen_local" else 0)
     if budgets["bus"] > 0:
         recent_bus_msgs = bus.recent(limit=recent_bus_limit, channel=channel)

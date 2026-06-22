@@ -39,15 +39,30 @@ class SearchResult:
                 "diagnostic": self.diagnostic}
 
 
+def agent_may_use_web(registry, agent) -> bool:
+    """may_use_web enforcement (INFRA-038): whether `agent` is permitted to reach
+    the web, per its registry flag. The flag is now a REAL, consumed control."""
+    agents = registry.get("agents", registry) if isinstance(registry, dict) else {}
+    return bool((agents.get(agent) or {}).get("may_use_web", False))
+
+
 @dataclass
 class SearchRouter:
     project_root: Path
     keys: dict = field(default_factory=dict)
+    registry: dict = field(default_factory=dict)  # agents map, for may_use_web enforcement
     _lock: threading.RLock = field(default_factory=threading.RLock)
 
     @classmethod
-    def open(cls, project_root, keys=None):
-        return cls(project_root=project_root, keys=keys or {})
+    def open(cls, project_root, keys=None, registry=None):
+        if registry is None:
+            try:
+                reg = json.loads((Path(project_root) / "config" / "agent_registry.json")
+                                 .read_text(encoding="utf-8"))
+                registry = reg.get("agents", {})
+            except Exception:
+                registry = {}
+        return cls(project_root=project_root, keys=keys or {}, registry=registry)
 
     # Protected durable learnings (INFRA-030): outside config/, in durable/learnings/.
     @property
@@ -108,7 +123,16 @@ class SearchRouter:
         top, stats = ranked[0]
         return top if stats.get("success", 0) > stats.get("fail", 0) else None
 
-    def search(self, query, *, claim_type="unknown", institution=None, query_plan=None):
+    def search(self, query, *, agent=None, claim_type="unknown", institution=None, query_plan=None):
+        # may_use_web enforcement (INFRA-038): a roster agent reaches the web ONLY
+        # if its registry flag may_use_web is true. agent=None is a system/intake
+        # caller (e.g. the date cascade) — not a roster-agent action — and is
+        # permitted. Redactors are may_use_web=false, so this hard-refuses any
+        # attempt to route a redactor to the web (web-per-tier is deferred to 3b).
+        if agent is not None and not agent_may_use_web(self.registry, agent):
+            raise PermissionError(
+                f"agent {agent!r} may not use the web (may_use_web is false) — "
+                f"capability gate (INFRA-038); LAW-IV forbids sensitive content on the network")
         diagnostic = {"attempted": []}
         plan_primary = (query_plan or {}).get("primary") or {}
         if plan_primary.get("engine") == "api" and plan_primary.get("url"):
