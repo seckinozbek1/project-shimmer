@@ -87,7 +87,7 @@ def spawn_all(project_root, *, overwrite=False):
     report.record(_spawn_institution_registry(project_root, combined, overwrite=overwrite))
     report.record(_spawn_citation_convention(project_root, combined, overwrite=overwrite))
     report.record(_spawn_speech_acts_taxonomy(project_root, combined, overwrite=overwrite))
-    report.record(_spawn_project_rules_appendix(project_root, report))
+    report.record(_record_spawn_log(project_root, report))
     return report
 
 
@@ -220,26 +220,29 @@ def _spawn_speech_acts_taxonomy(project_root, combined, *, overwrite):
         return _ok("error", path, f"{type(e).__name__}: {e}")
 
 
-def _spawn_project_rules_appendix(project_root, report):
-    """Append a one-line stamp to prompts/project_rules.md. Idempotent in the
-    sense that if every spawned asset already existed (all 'exists'), no new
-    stamp is appended — the file is unchanged and the action reports 'exists'.
-    """
-    path = project_root / "prompts" / "project_rules.md"
+def _record_spawn_log(project_root, report):
+    """Append a per-run spawn-statistics record to the DURABLE runtime log
+    (durable/learnings/spawn_log.jsonl) — NOT to the tracked prompts/project_rules.md.
+
+    This is runtime telemetry about the durable learnings adaptive_spawn produces,
+    so it lives co-located in durable/learnings/, is gitignored per the firewall
+    (INFRA-030), and is regenerated/cleared with the other resettable learnings.
+    The information is unchanged from the prior project_rules stamp (timestamp,
+    corpus files, corpus chars, created, exists); only the destination moves out of
+    the tracked file so a run can never dirty project_rules.md."""
+    path = durable_paths.spawn_log_path(project_root)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
-        new_creations = sum(1 for a in report.actions if a.get('status') == 'created')
-        if new_creations == 0 and path.exists():
-            return _ok("exists", path, "no new assets created; appendix unchanged")
-        stamp = (f"\n## adaptive_spawn ran {_now()}\n\n"
-                 f"- corpus files: {len(report.corpus_files)}\n"
-                 f"- corpus chars: {report.corpus_chars}\n"
-                 f"- created: {new_creations}\n"
-                 f"- exists (no-op): {sum(1 for a in report.actions if a.get('status') == 'exists')}\n")
-        had_file = path.exists()
-        path.write_text(existing + stamp, encoding="utf-8")
-        return _ok("appended" if had_file else "created", path, "stamp recorded")
+        record = {
+            "timestamp": _now(),
+            "corpus_files": len(report.corpus_files),
+            "corpus_chars": report.corpus_chars,
+            "created": sum(1 for a in report.actions if a.get("status") == "created"),
+            "exists": sum(1 for a in report.actions if a.get("status") == "exists"),
+        }
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return _ok("logged", path, "spawn run recorded to durable runtime log")
     except Exception as e:
         return _ok("error", path, f"{type(e).__name__}: {e}")
 

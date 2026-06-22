@@ -60,6 +60,7 @@ def institution_registry_path(pr): return learnings_dir(pr) / "institution_regis
 def citation_convention_path(pr): return learnings_dir(pr) / "citation_convention.json"
 def speech_acts_taxonomy_path(pr): return learnings_dir(pr) / "speech_acts_taxonomy.json"
 def search_strategy_learnings_path(pr): return learnings_dir(pr) / "search_strategy_learnings.json"
+def spawn_log_path(pr): return learnings_dir(pr) / "spawn_log.jsonl"
 def discovered_apis_path(pr): return learnings_dir(pr) / "discovered_apis.json"
 def document_dates_path(pr): return learnings_dir(pr) / "document_dates.json"
 

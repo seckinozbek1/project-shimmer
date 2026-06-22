@@ -593,7 +593,9 @@ b. Linguistic register identity → durable/reference/LINGUISTIC_IDENTITY.md
 c. Citation conventions → durable/learnings/citation_convention.json
 d. Speech act taxonomy → durable/learnings/speech_acts_taxonomy.json
 e. Institution registry → durable/learnings/institution_registry.json
-f. Project-specific rules learned from first run → prompts/project_rules.md
+f. Per-run spawn statistics → durable/learnings/spawn_log.jsonl (durable runtime
+   log; gitignored). adaptive_spawn does NOT write prompts/project_rules.md — that
+   file is the tracked operator/DELTA rules template.
 
 After the first run, the project has everything it needs.
 No manual seeding required.
@@ -733,7 +735,7 @@ project_shimmer/
                                         register/awareness assets now live under
                                         durable/reference/, see above)
   prompts/
-    project_rules.md                  ← project-specific rules (auto + manual)
+    project_rules.md                  ← operator rules + approved project DELTAs (tracked template)
   scripts/
     orchestrator.py                   ← Top Orchestrator
     constitution.py                   ← constitution engine

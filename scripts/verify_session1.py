@@ -560,7 +560,7 @@ import durable_paths as _dp
     _dp.speech_acts_taxonomy_path(ROOT),
     _dp.citation_convention_path(ROOT),
     _dp.situational_awareness_path(ROOT),
-    ROOT / "prompts" / "project_rules.md",
+    _dp.spawn_log_path(ROOT),
 )
 def check_27_adaptive_spawn():
     """For Part XVIII Section F: adaptive_spawn reads from input/context/. We

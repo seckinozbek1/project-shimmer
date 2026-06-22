@@ -44,6 +44,7 @@ durable/learnings/institution_registry.json
 durable/learnings/search_strategy_learnings.json
 durable/learnings/discovered_apis.json
 durable/learnings/document_dates.json
+durable/learnings/spawn_log.jsonl
 durable/governance/model_approvals.json
 durable/governance/constitution_guard_log.jsonl
 durable/governance/redaction_waivers.jsonl
