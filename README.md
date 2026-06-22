@@ -63,7 +63,8 @@ detection. The agents are the bicycle.
 | 4     | Conventions       | rules in `input/conventions/*.md`                                     |
 
 Higher layers dominate. LAW-IV (privacy) outranks LAW-0 (operator
-sovereignty) and is the only law that does.
+sovereignty) and is the only law that does. Layer 2 (task-force laws) is
+populated by operator-ratified DELTAs — see the DELTA mechanism section.
 
 ### The foundation layer: seven seed laws (Part I)
 
@@ -217,6 +218,14 @@ degrades safely if that load fails). If Qwen is reachable but no GPU is detected
 the gate prints a soft "redaction will be slow on CPU" reminder — it never blocks
 and is never recorded.
 
+**Canonical master, on-demand renders (Part XXVII §E).** Each logical output has
+one master format; other formats are pure renders of it, never written from
+independent sources. For the amendments deliverable, `<doc>__amendments.json` is
+the master and the `.md` and tracked-changes `.docx` are derived from that single
+payload through one entry point (`amendment_render.write_amendment_deliverables`),
+so the three files cannot drift. (Similarly, `cost_tracker.json` is a recomputed
+aggregate of the `cost_tracker.jsonl` event log.)
+
 ---
 
 ## Semantic retrieval
@@ -230,7 +239,10 @@ $s_i$ of the operational document, top-k context passages are
 retrieved by embedding similarity to $s_i$ alone, and the retrievals
 are concatenated into a single agent call with provision-tagged
 blocks. One agent call per agent, not n, but each provision sees its
-own retrieval window.
+own retrieval window. Corpus-level agents (ARCHIVIST, INST_FINDER,
+CITATION_RESOLVER) that read the full context digest dominate cost;
+per-provision agents are bounded by chunk size, not corpus size, so they
+stay cheap as the corpus grows.
 
 ### Embedding store
 
@@ -390,112 +402,16 @@ to a permanent change is a DELTA proposal:
 3. Future runs load the amended constitution. Rules descended from a
    DELTA cite it.
 
-Approved DELTAs (one-for-one with `config/constitution.json` `amendments[]`):
-
-- **INFRA-017** — directory hygiene
-- **INFRA-018** — agent hygiene
-- **INFRA-019** — variable hygiene
-- **INFRA-020** — domain-term purge
-- **INFRA-021** — adaptive spawning
-- **INFRA-022** — Shimmer UI
-- **INFRA-023** — non-sibling topology
-- **INFRA-024** — English module-name rules
-- **INFRA-025** — verification-cache subsystem rename (`verification_memory`
-  → `verification_cache`, `ontologies/` → `snapshots/`)
-- **INFRA-026** — per-agent model selection (per-agent **family+version keys** in
-  `agent_registry.json`, `model_tier`/`context_tier` removed, key-layer model
-  override removed; live gate that **self-resolves** each family key to the
-  concrete dated id when exactly one live id matches — never written to a tracked
-  file — and falls back to the deprecated-model firewall (operator approval) when
-  zero or multiple/ambiguous ids match, on both producer and auditor sides)
-- **INFRA-027** — broad shared input-format family (`scripts/text_extract.py`
-  gives every reader the same `.pdf`/`.docx`/`.html`/`.txt`/`.md`/`.rst`/
-  `.log`/`.json` family; embedding store embeds all formats, not just PDF;
-  unsupported types warn instead of silently skipping)
-- **INFRA-028** — multilingual support (per-document language detection,
-  per-language embedding model with per-model sub-stores keeping query/passage
-  on the same model, and direction-aware RTL/LTR `.docx` output; agent layer
-  and cross-family verification untouched)
-- **INFRA-029** — protect cumulative learning: the durable-vs-disposable
-  firewall (genesis Part XXVII §B) making the protected learning class
-  impossible for any per-run cleanup, reset, load, or reorganization to destroy
-  or destructively relocate. Enforced by a constitutional-amendment tripwire
-  (`scripts/constitution_guard.py`) that stops any modify/delete of an existing
-  amendment or seed law pending operator approval, and by a snapshot-first,
-  governance-preserving `reset_snapshot`. (Ratified.)
-- **INFRA-030** — relocate the protected durable/learning class into a
-  top-level `durable/` tree (cache/global/learnings/reference/governance),
-  outside the auto-cleaned `output/` tree, so the firewall is enforced by
-  location; reset strips only the resettable durable subdirs and never touches
-  `durable/global` or `durable/governance`. `config/constitution.json` stays put.
-- **INFRA-031** — append-only numbering discipline (genesis Part XXVII §H): Part
-  numbers must form an unbroken sequence with no gaps; new Parts are appended at
-  the end only, never inserted or left as a reserved gap; a renumber happens only
-  to close an accidental gap, with full upstream/downstream reference updates and
-  through the amendment tripwire. `INFRA-0xx` amendment IDs are likewise
-  append-only (never reused, inserted, or renumbered) and independent of Part
-  numbers. (Recorded alongside closing the prior XXII→XXIV gap.)
-- **INFRA-032** — per-run output isolation (genesis Part XXVII §A): every run
-  writes into its own `output/runs/<UTC-timestamp>__<run-id>/` folder (run id =
-  8 random hex), so runs never overwrite each other. A single source of truth
-  (`scripts/run_context.py`) computes the run path once at boot; the bus, cost
-  tracker, deliverables, reference index, audit synthesis, tier-1 cache, run
-  summary, and the agent-layer contract-violation dumps all derive from it
-  (run-awareness is threaded into every AgentWrapper). Deliverable keys are
-  collision-safe (`<stem>__<ext>` on stem collision). `durable/` is never written
-  into a run folder and per-run cleanup cannot reach it; the firewall is unchanged.
-- **INFRA-033** — single canonical master with on-demand renders (genesis Part
-  XXVII §E): the `amendments_payload` dict (written verbatim as
-  `<doc>__amendments.json`) is the master, and the `.md` and tracked-changes
-  `.docx` are pure renders of it through one entry point
-  (`amendment_render.write_amendment_deliverables`), so the formats cannot drift.
-  The `.docx` takes the original text only as a presentation canvas; a drift-guard
-  assertion confirms each render reflects the master. `cost_tracker.json`
-  (aggregate of the `.jsonl` event log) and `audit_synthesis.md`/`delta_proposals.json`
-  (two views of one summary) are documented as already master-derived.
-- **INFRA-034** — retire dead wiring and add the redaction phase (genesis Part XI):
-  deleted the orphaned `scripts/agents/` per-agent subclass package (the pipeline
-  drives every agent via `AgentWrapper` by registry name) and removed the
-  never-written within-run tier-1 verification cache (the cache is now two durable
-  tiers, project + global). Added an always-on final pipeline phase that screens
-  the deliverables: `REDACT_CLERK`/`REDACT_AUTHORITY`/`REDACT_GATE` (Qwen) decide
-  adaptively what to redact; an approved redaction flows through the amendments
-  master and re-renders `.md`/`.docx`. Run-scoped, never touches `durable/`, posts
-  to the bus, and degrades safely if Qwen is unreachable. INST_FINDER and
-  CITATION_RESOLVER were flagged (bus-only output) but not deleted.
-- **INFRA-035** — Qwen-required startup gate (genesis Part XI): redaction always
-  runs on the local Qwen backend, so the pipeline confirms that backend is
-  reachable/configured before any agent runs and **refuses** the run if not —
-  unless the operator declares the run non-sensitive with `--no-redaction-override`
-  (per-run only, confirmed interactively), each waiver logged to
-  `durable/governance/redaction_waivers.jsonl`. When waived, the redaction phase
-  records `REDACTION_SKIPPED (operator_waived)`. The pre-run check verifies
-  libraries + model id; actual model load is verified at first call. Missing GPU
-  is a soft printed reminder only — never a blocker, never recorded.
-- **INFRA-036** — prompt caching on both cloud paths (genesis Part VII): every
-  agent prompt is assembled stable-prefix-first (identity + DO/DO-NOT + contract +
-  constitution + conventions, then the per-call dynamic suffix). Claude marks the
-  prefix with explicit `cache_control` (5-min ephemeral, reads at 0.1x); GPT adds
-  no `cache_control` but is structured stable-first for OpenAI's automatic prefix
-  cache. The cost tracker logs each provider's cache fields per call (0 when
-  absent) so a silent cache loss is visible. Rule: no dynamic content may enter
-  the stable prefix. Same effective prompt, reordered; agent logic unchanged.
-
-INFRA-017 through INFRA-024 predate the DELTA-recording convention and are
-stored as pre-convention stubs (`pre_convention: true`, `created: "unknown"`);
-their details were not captured and are not reconstructed.
-
-### DELTA recording convention
-
-Every numbered DELTA is recorded as an amendment in
-`config/constitution.json` (`amendments[]`) — that is the canonical,
-machine-readable log. This roster lists them all for humans, but **no DELTA
-lives only in the roster: if it has a number, it is in the constitution.**
-Future DELTAs follow the same path (record the amendment first, then add the
-roster line). The `_GENESIS_CONSTITUTION` reset template in
-`scripts/snapshot_manager.py` deliberately keeps an empty `amendments[]` so
-`--reset-snapshot` still strips legislation back to the seven seed laws; the
-canonical log is the live `config/constitution.json`.
+A DELTA is the only path to a permanent change. When the operator ratifies one,
+it is recorded as a constitutional amendment with an append-only `INFRA-0xx` id
+(ids are never reused, inserted, or renumbered). The canonical, machine-readable
+log of every amendment is `config/constitution.json` `amendments[]` — the single
+source of truth, so the amendments are not re-listed in this README. A ratified
+amendment carries the force of task-force law: in the four-governance-layers table
+above it is layer 2 (operator-ratified legislation), which builds on and is bound
+by the foundational seven seed laws of layer 1. Code changes cite the genesis Part
+they implement; where the change is a governance change, they also cite the DELTA
+they implement.
 
 ---
 
@@ -554,6 +470,14 @@ blocks `**/config.py` and `api_keys*/`, and a pre-commit hook blocks any
 key-shaped string. No machine-specific paths or usernames are stored anywhere in
 the repo; the config location is resolved at runtime.
 
+**Config resolution order (canonical).** The loader finds `config.py` at runtime,
+first match wins: (1) `$SHIMMER_CONFIG_PATH` — a `config.py` file or a folder
+containing one; (2) `../api_keys/config.py` — the sibling folder from step 2;
+(3) `.env_path` — a legacy repo-root pointer (fallback). The reader copies out
+**API-key values only** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `BRAVE_API_KEY`);
+any `model = …` line is ignored and never affects model selection (model choice is
+owned solely by `config/agent_registry.json`).
+
 ---
 
 ## Quick start
@@ -564,33 +488,14 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-**API keys.** Loaded from an external `config.py` that lives **outside** the
-repository and is never committed. The loader resolves it at runtime, in order:
-
-1. `$SHIMMER_CONFIG_PATH` — explicit override (a `config.py` file, or a directory
-   containing one);
-2. `../api_keys/config.py` — sibling folder one level above the repo root;
-3. `.env_path` — legacy repo-root pointer holding a relative path (fallback).
-
-No absolute path or username is stored in any tracked file. The reader copies out
-**API-key values only** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `BRAVE_API_KEY`);
-any `model = …` line in that file is ignored and can never influence model
-selection (model choice is owned solely by `config/agent_registry.json`).
-`scripts/guard_secrets.py` runs as a pre-commit hook (see `.githooks/pre-commit`)
-and blocks any commit containing a key-shaped string. Activate the hook after
-`git init`:
+**API keys & setup tool.** See **First-time setup** above for the config location,
+the full resolution order, the keys-outside-repo guarantee, and what `setup.bat`
+does. Activate the pre-commit secret-scanner hook (`scripts/guard_secrets.py`, see
+`.githooks/pre-commit`) once after `git init`:
 
 ```bash
 git config core.hooksPath .githooks
 ```
-
-**Operator setup tool.** Double-click `setup.bat` (repo root) to run
-`scripts/preflight.py`: it locates/loads the config (scaffolding a template if
-absent), installs `beautifulsoup4` + `langdetect` if missing, reuses the existing
-Qwen reachability gate and GPU soft-check, queries each provider's live model
-list, and prints an honest readiness bill of health. It never runs the paid
-pipeline and never prints a key value. All logic lives in the Python module, so a
-future `setup.sh` / `setup.command` is a thin wrapper too.
 
 **Drop inputs.**
 
@@ -611,14 +516,6 @@ Outputs land under the run's own folder `output/runs/<UTC-timestamp>__<run-id>/`
 (runs never overwrite each other): six deliverables per reviewed document in
 `…/deliverables/`, the bus in `…/logs/agent_bus.jsonl`, cost and run logs in
 `…/logs/`, and contract-failure raw text in `…/audit/contract_violations/`.
-
-**Canonical master, on-demand renders (Part XXVII §E).** Each logical output has
-one master format; other formats are pure renders of it, never written from
-independent sources. For the amendments deliverable, `<doc>__amendments.json` is
-the master and the `.md` and tracked-changes `.docx` are derived from that single
-payload through one entry point (`amendment_render.write_amendment_deliverables`),
-so the three files cannot drift. (Similarly, `cost_tracker.json` is a recomputed
-aggregate of the `cost_tracker.jsonl` event log.)
 
 ---
 
@@ -738,46 +635,6 @@ last.
 
 ---
 
-## Cost analysis
-
-Most recent EU AI Act review run, from
-`output/runs/<run>/logs/cost_tracker.json`:
-
-| Metric                | Value      |
-|-----------------------|------------|
-| Total cost            | $0.8484    |
-| LLM calls             | 11         |
-| Failed calls          | 0          |
-| Claude calls (8)      | $0.7576    |
-| Claude input tokens   | 197,920    |
-| Claude output tokens  | 10,922     |
-| GPT-4o calls (3)      | $0.0908    |
-| GPT-4o input tokens   | 25,996     |
-| GPT-4o output tokens  | 2,580      |
-
-Per-agent breakdown:
-
-| Agent              | Calls | Input tokens | Output tokens | Cost USD |
-|--------------------|-------|--------------|---------------|----------|
-| ARCHIVIST          | 1     | 42,064       | 3,501         | 0.1787   |
-| INST_FINDER        | 1     | 41,929       | 1,052         | 0.1416   |
-| CITATION_RESOLVER  | 1     | 42,069       | 175           | 0.1288   |
-| AMENDMENT_DRAFTER  | 1     | 17,812       | 2,043         | 0.0841   |
-| LEGAL_ANALYST      | 1     | 16,142       | 1,312         | 0.0681   |
-| SPEECH_ACT_TAGGER  | 1     | 14,391       | 1,271         | 0.0622   |
-| PROCESSOR          | 1     | 14,461       | 563           | 0.0518   |
-| STYLE_GUARDIAN     | 1     | 9,052        | 1,005         | 0.0422   |
-| PRACTICE_AUDITOR   | 1     | 13,676       | 756           | 0.0418   |
-| FACT_CHECKER       | 1     | 5,816        | 1,437         | 0.0289   |
-| VERIFIER           | 1     | 6,504        | 387           | 0.0201   |
-
-Cost is dominated by the three corpus-level agents (ARCHIVIST,
-INST_FINDER, CITATION_RESOLVER) reading the full context digest.
-Per-provision-level agents are bounded by chunk-size, not corpus-size,
-so they remain cheap as the corpus grows.
-
----
-
 ## Verify gate
 
 `scripts/verify_session1.py` runs 39 structural invariants. Examples:
@@ -818,14 +675,9 @@ statement:
 > continues to pass, then domain knowledge does not reside in
 > framework code.
 
-The test has been run cleanly on one domain so far: EU AI Act
-alignment (with a prior development iteration used for architecture
-debugging). The EU run produced the six-file deliverable shape
-(`*__amendments.docx/json/md`, `*__deliverable.md`,
-`*__context_summary.md`, `*__operative_summary.md`), and check 22
-passed. The contrapositive — a code change that
-leaks domain-specific vocabulary — would fail check 22 immediately.
-The verify gate is therefore the falsifier, not a passive log.
+The contrapositive — a code change that leaks domain-specific
+vocabulary — would fail check 22 immediately. The verify gate is
+therefore the falsifier, not a passive log.
 
 ---
 
