@@ -49,12 +49,19 @@ class SearchRouter:
     def open(cls, project_root, keys=None):
         return cls(project_root=project_root, keys=keys or {})
 
+    # Protected durable learnings (INFRA-030): outside config/, in durable/learnings/.
     @property
-    def discovered_apis_path(self): return self.project_root / "config" / "discovered_apis.json"
+    def discovered_apis_path(self):
+        import durable_paths
+        return durable_paths.discovered_apis_path(self.project_root)
     @property
-    def learnings_path(self): return self.project_root / "config" / "search_strategy_learnings.json"
+    def learnings_path(self):
+        import durable_paths
+        return durable_paths.search_strategy_learnings_path(self.project_root)
     @property
-    def institution_registry_path(self): return self.project_root / "config" / "institution_registry.json"
+    def institution_registry_path(self):
+        import durable_paths
+        return durable_paths.institution_registry_path(self.project_root)
 
     def _load_json(self, path, default):
         if not path.exists(): return default

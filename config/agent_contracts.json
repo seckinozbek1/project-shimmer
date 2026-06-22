@@ -74,7 +74,7 @@
         "chronology_position": "int",
         "reference_chain": "array of document_id strings",
         "index_tags": "array of strings",
-        "structural_inventory": "array of {element: string, description: string, document_count: int, document_names: array of strings} — corpus-level only, produced when reviewing the full context digest per genesis Part XXVII"
+        "structural_inventory": "array of {element: string, description: string, document_count: int, document_names: array of strings} — corpus-level only, produced when reviewing the full context digest per genesis Part XXVI"
       },
       "required": ["document_id", "chronology_position"],
       "max_output_tokens": 4096,
@@ -83,6 +83,7 @@
       ]
     },
     "INST_FINDER": {
+      "note": "AUDIT-ONLY (intentional): this agent's corpus-level output is posted to the bus for auditability but is intentionally NOT consumed by any downstream agent or deliverable yet. This is by design, not a dropped handoff; it is a candidate input for future integration (e.g. an institution graph). Do not treat the missing downstream reader as a bug.",
       "fields": {
         "topic": "string",
         "institutions": "array of {name, role, evidence_in_text}",
@@ -91,6 +92,7 @@
       "required": ["topic", "institutions", "confidence"]
     },
     "CITATION_RESOLVER": {
+      "note": "AUDIT-ONLY (intentional): this agent's corpus-level output is posted to the bus for auditability but is intentionally NOT consumed by any downstream agent or deliverable yet. This is by design, not a dropped handoff; it is a candidate input for future integration (e.g. a cross-document citation graph). Do not treat the missing downstream reader as a bug.",
       "fields": {
         "source_document": "string", "target_document": "string | null",
         "citation_form": "string", "resolved": "boolean", "graph_edge": "object"

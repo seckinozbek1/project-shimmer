@@ -4,7 +4,8 @@ Splits documents into paragraphs and sentences, assigns stable REF-* IDs,
 and maintains the index across pipeline phases.
 
 ref_id pattern: REF-XXXX, monotonically increasing per index instance.
-The index is persisted to output/audit/reference_index.json and can be
+The index is persisted to the run's audit/reference_index.json (the pipeline
+passes the per-run path; INFRA-032) and can be
 extended idempotently across pipeline phases.
 """
 
@@ -51,11 +52,16 @@ class ReferenceIndex:
     by_id: dict = field(default_factory=dict)
     _lock: threading.RLock = field(default_factory=threading.RLock)
     _seq: int = 0
+    # Explicit on-disk location. When None, falls back to the legacy
+    # output/audit/reference_index.json. The pipeline passes the CURRENT run's
+    # path (output/runs/<run>/audit/reference_index.json) so the index is
+    # per-run and disposable (Part XXVII §A).
+    index_path: Path | None = None
 
     @classmethod
-    def open(cls, project_root: Path) -> "ReferenceIndex":
-        idx = cls(project_root=project_root)
-        path = cls._path_for(project_root)
+    def open(cls, project_root: Path, *, index_path: Path | None = None) -> "ReferenceIndex":
+        idx = cls(project_root=project_root, index_path=index_path)
+        path = idx._resolved_path()
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
@@ -79,9 +85,12 @@ class ReferenceIndex:
     def _path_for(project_root):
         return project_root / "output" / "audit" / "reference_index.json"
 
+    def _resolved_path(self) -> Path:
+        return self.index_path or self._path_for(self.project_root)
+
     def save(self) -> Path:
         with self._lock:
-            path = self._path_for(self.project_root)
+            path = self._resolved_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             data = {"schema_version": "1.0.0", "generated_at": _now(),
                     "entries": [e.as_dict() for e in self.entries]}

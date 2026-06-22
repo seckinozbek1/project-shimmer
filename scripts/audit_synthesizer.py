@@ -36,6 +36,10 @@ class AuditFinding:
 class AuditSynthesizer:
     project_root: Path
     bus: MessageBus
+    # Per-run context (run_context.RunContext). When set, audit_synthesis.md and
+    # delta_proposals.json are written into the current run's audit/ folder
+    # (Part XXVII §A); otherwise they fall back to output/audit for standalone use.
+    run_context: Any = None
 
     def synthesize(self, *, write_outputs=True, verifier_findings=None,
                    fact_check_findings=None, practice_findings=None):
@@ -55,7 +59,7 @@ class AuditSynthesizer:
                 deltas.append(DeltaProposal(id=next_id(), kind="reduce_ttl",
                                             trigger=f"{n} disputed from {source}",
                                             evidence={"source": source, "disputed_count": n},
-                                            proposed_change={"target": "memory.TTL_DAYS",
+                                            proposed_change={"target": "verification_cache.TTL_DAYS",
                                                              "action": "reduce_for_source",
                                                              "scope": source, "factor": 0.5,
                                                              "reason": "high dispute rate"}))
@@ -144,10 +148,21 @@ class AuditSynthesizer:
         return summary
 
     def _write_outputs(self, summary):
-        audit_dir = self.project_root / "output" / "audit"
-        audit_dir.mkdir(parents=True, exist_ok=True)
-        (audit_dir / "audit_synthesis.md").write_text(_render_md(summary), encoding="utf-8")
-        (audit_dir / "delta_proposals.json").write_text(
+        # Master-and-derived (Part XXVII §E / INFRA-033): both files are views of
+        # the single `summary` dict computed in synthesize(). audit_synthesis.md is
+        # the human-readable view; delta_proposals.json is the machine view of its
+        # delta_proposals. Neither is an independent source — both render from
+        # `summary`, so they cannot disagree.
+        if self.run_context is not None:
+            synthesis_path = self.run_context.audit_synthesis_path()
+            deltas_path = self.run_context.delta_proposals_path()
+        else:
+            audit_dir = self.project_root / "output" / "audit"
+            synthesis_path = audit_dir / "audit_synthesis.md"
+            deltas_path = audit_dir / "delta_proposals.json"
+        synthesis_path.parent.mkdir(parents=True, exist_ok=True)
+        synthesis_path.write_text(_render_md(summary), encoding="utf-8")
+        deltas_path.write_text(
             json.dumps({"generated_at": summary["generated_at"], "proposals": summary["delta_proposals"]},
                        indent=2, ensure_ascii=False), encoding="utf-8")
 

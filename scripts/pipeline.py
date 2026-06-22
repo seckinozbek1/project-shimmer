@@ -12,7 +12,7 @@ Lifecycle:
   - PHASE 7: DELTA proposals -> operator escalation
   - PHASE 8: persist, run summary
 
-CLI shortcuts (also): --save-ontology, --load-ontology, --reset-ontology, --list-ontologies
+CLI shortcuts (also): --save-snapshot, --load-snapshot, --reset-snapshot, --list-snapshots
 """
 
 from __future__ import annotations
@@ -36,22 +36,26 @@ else:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from agent_wrapper import AgentWrapper, load_api_keys
+import amendment_render
 from audit_synthesizer import AuditSynthesizer
 from convention_parser import parse_conventions, write_registry
 from corpus_validator import extract_distinctive_terms, validate_corpus_entry
 import embedding_store
 from cost_tracker import CostTracker, estimate_cost
-from docx_builder import build_amendments_docx
 from document_dating import read_dates, resolve_dates, write_dates
-from ontology_manager import (
-    list_ontologies, load_ontology, reset_ontology, save_ontology,
+from model_registry import enforce_current_models
+from snapshot_manager import (
+    list_snapshots, load_snapshot, reset_snapshot, save_snapshot,
 )
 from orchestrator import OperatorDecision, TopOrchestrator
 from pipeline_amendment_validator import validate_amendment_payload
 from reference_builder import ReferenceIndex
+import redaction_gate
+import run_context as run_context_mod
 from review_scope import apply_cutoff
 from search_router import SearchRouter
 from summary_generators import render_context_summary, render_operative_summary
+import text_extract
 
 
 # Distinctive-term extraction is delegated to corpus_validator.extract_distinctive_terms,
@@ -266,34 +270,33 @@ CONVENTION_REVIEW_AGENTS = ["PRACTICE_AUDITOR", "STYLE_GUARDIAN"]
 
 # ---------- corpus loading -----------------------------------------------------------------
 
-def _read_pdf(path: Path) -> str:
-    try:
-        import pypdf
-        reader = pypdf.PdfReader(str(path))
-        return "\n".join((page.extract_text() or "") for page in reader.pages)
-    except Exception as e:
-        print(f"[pipeline] WARN: could not read {path.name}: {e}", file=sys.stderr)
-        return ""
-
-
 def _load_corpus(input_dir: Path) -> list[dict]:
     docs = []
     if not input_dir.exists():
         return docs
+    # Count stems first so collisions can be disambiguated. The doc id keys every
+    # deliverable (output/runs/<run>/deliverables/<id>__*.md); two files sharing a
+    # stem (e.g. policy.pdf and policy.docx) would clobber each other if both
+    # keyed "policy". Collision-safe rule (Part XXVII §A): keep the bare stem when
+    # unique; qualify only on collision as "<stem>__<ext>".
+    stem_counts: dict[str, int] = {}
+    loaded = []  # (path, name, text)
     for p in sorted(input_dir.iterdir()):
         if not p.is_file():
             continue
-        ext = p.suffix.lower()
-        if ext == ".pdf":
-            text = _read_pdf(p)
-        elif ext in {".txt", ".md", ".rst", ".log"}:
-            try: text = p.read_text(encoding="utf-8", errors="replace")
-            except Exception: text = ""
-        else:
+        # Shared format family (.pdf/.docx/.html/.htm/.txt/.md/.rst/.log/.json).
+        # Unsupported types warn (never silently skipped).
+        if not text_extract.is_supported(p):
+            text_extract.warn_unsupported(p, where=str(input_dir.name))
             continue
+        text = text_extract.extract_text(p)
         if not text.strip():
             continue
-        docs.append({"id": p.stem, "name": p.name, "text": text,
+        loaded.append((p, p.name, text))
+        stem_counts[p.stem] = stem_counts.get(p.stem, 0) + 1
+    for p, name, text in loaded:
+        doc_id = p.stem if stem_counts.get(p.stem, 0) <= 1 else f"{p.stem}__{p.suffix.lstrip('.').lower()}"
+        docs.append({"id": doc_id, "name": name, "text": text,
                      "char_count": len(text), "path": str(p)})
     return docs
 
@@ -324,8 +327,10 @@ def _populate_operational(project_root: Path, search_router: SearchRouter) -> tu
     # Clear operational/ before repopulating per spec
     for f in operational_dir.glob("*"):
         if f.is_file(): f.unlink()
+    # Same format family as _load_corpus. Unsupported files are warned there
+    # (this loader also scans context_dir); here we just filter to candidates.
     candidate_files = sorted(p for p in context_dir.iterdir()
-                             if p.is_file() and p.suffix.lower() in {".pdf", ".txt", ".md"})
+                             if p.is_file() and text_extract.is_supported(p))
     if not candidate_files:
         return [], []
     dated = resolve_dates(candidate_files, search_router=search_router)
@@ -416,7 +421,7 @@ async def phase_3_4_content_production(orch, keys, op_docs, ctx_docs,
         results.append({"scope": "corpus", "agent": agent_name, **result})
     # Per-doc only for OPERATIONAL docs (context is reference only).
     # Per Part XXI amendment, LEGAL_ANALYST gets provision-aware context refs.
-    # Per Part XXVII, LEGAL_ANALYST also receives the structural inventory
+    # Per Part XXVI, LEGAL_ANALYST also receives the structural inventory
     # extracted from the just-completed ARCHIVIST corpus output.
     all_context_refs = [e.as_dict() for e in reference_index.entries
                         if e.input_type == "context"]
@@ -487,7 +492,7 @@ async def phase_5_5_convention_review(orch, keys, op_docs, run_objectives,
     """Convention-driven review: PRACTICE_AUDITOR + STYLE_GUARDIAN against the registry.
 
     Per Part XXI amendment, both agents receive provision-aware context refs
-    (baseline doc query + per-convention-rule queries merged). Per Part XXVII,
+    (baseline doc query + per-convention-rule queries merged). Per Part XXVI,
     PRACTICE_AUDITOR additionally receives the structural inventory in its
     work payload so its absence-detection directive has data to work with.
     """
@@ -529,7 +534,7 @@ def _doc_refs_excerpt(reference_index, document_id):
 
 
 def _extract_structural_inventory(production_results: list) -> list[dict]:
-    """Per Part XXVII: pull the structural_inventory list out of the
+    """Per Part XXVI: pull the structural_inventory list out of the
     ARCHIVIST's corpus-level output, if present. Returns [] when missing
     so callers can pass it through without conditional handling."""
     for r in production_results:
@@ -589,7 +594,8 @@ async def phase_6_synthesis(orch, keys, op_docs, production, audit, conv_review,
     uses cosine-similarity retrieval instead of Zipfian term matching. The
     REF-* citation format is identical regardless of which path runs.
     """
-    deliv_dir = ROOT / "output" / "deliverables"
+    # Per-run deliverables folder (Part XXVII §A): output/runs/<run>/deliverables/.
+    deliv_dir = orch.run_context.deliverables_dir()
     deliv_dir.mkdir(parents=True, exist_ok=True)
     deliverables = {}
     existing_amendments = _harvest_amendment_payloads_from_bus(orch)
@@ -712,22 +718,20 @@ async def phase_6_synthesis(orch, keys, op_docs, production, audit, conv_review,
         ok_payload, errs = validate_amendment_payload(amendments_payload)
         amendments_payload["_validator_errors"] = errs
 
-        (deliv_dir / f"{doc['id']}__amendments.json").write_text(
-            json.dumps(amendments_payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        (deliv_dir / f"{doc['id']}__amendments.md").write_text(
-            _render_amendments_md(doc, amendments_payload, convention_registry, reference_index),
-            encoding="utf-8")
-
+        # Single canonical master -> on-demand renders (Part XXVII §E / INFRA-033).
+        # amendments_payload (also written verbatim as __amendments.json) is the
+        # MASTER; the .md and .docx are pure renders DERIVED from it through the one
+        # entry point in amendment_render. No render reads amendment content from an
+        # independent source, so the three files cannot drift.
+        amend = amendment_render.write_amendment_deliverables(
+            amendments_payload, deliv_dir=deliv_dir, doc_id=doc["id"],
+            document_name=doc["name"], body_text=doc["text"],
+            category_for_conv=lambda c: _category_for_conv(c, convention_registry),
+        )
+        if amend.get("docx_error"):
+            print(f"[pipeline] WARN: docx build failed for {doc['name']}: {amend['docx_error']}",
+                  file=sys.stderr)
         docx_path = deliv_dir / f"{doc['id']}__amendments.docx"
-        try:
-            build_amendments_docx(
-                title=f"{doc['name']} — Convention review (tracked changes)",
-                body_text=doc["text"],
-                amendments=amendments_payload.get("amendments", []),
-                output_path=docx_path,
-            )
-        except Exception as e:
-            print(f"[pipeline] WARN: docx build failed for {doc['name']}: {e}", file=sys.stderr)
 
         # Per-agent deliverable
         per_agent_path = deliv_dir / f"{doc['id']}__deliverable.md"
@@ -746,6 +750,139 @@ async def phase_6_synthesis(orch, keys, op_docs, production, audit, conv_review,
         }
 
     return deliverables
+
+
+_REDACTION_PLACEHOLDER = "[REDACTED]"
+
+
+def _post_redaction(orch, doc_id, event, body):
+    """Post an auditable redaction-decision event to the run bus (LAW-IV)."""
+    orch._post_orchestrator(
+        recipient="OPERATOR", channel="redaction", msg_type="INFORM",
+        body={"event": event, "document_id": doc_id, **body},
+        constitution_check={"laws_consulted": ["LAW-IV", "LAW-V"], "result": "RESOLVED",
+                            "resolution": "redaction screening at the output boundary"})
+
+
+def _apply_redactions_to_master(master, redactions):
+    """Apply approved redactions to the canonical amendments master IN PLACE, so
+    every rendered format derives from the same redacted master (INFRA-033). Each
+    redaction is {"text": <substring>, "replacement": <opt, default [REDACTED]>}.
+    Returns the number of field substitutions made."""
+    n = 0
+    fields = ("original_text", "proposed_text", "comment")
+    for red in redactions or []:
+        if not isinstance(red, dict):
+            continue
+        target = red.get("text")
+        if not target:
+            continue
+        repl = red.get("replacement") or _REDACTION_PLACEHOLDER
+        for a in master.get("amendments", []):
+            if not isinstance(a, dict):
+                continue
+            for f in fields:
+                v = a.get(f)
+                if isinstance(v, str) and target in v:
+                    a[f] = v.replace(target, repl); n += 1
+    if n:
+        master["_redaction_applied"] = True
+    return n
+
+
+def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_registry,
+                      *, redaction_enabled=True):
+    """FINAL always-on pass (Part II redaction agents, LAW-IV). Runs every run,
+    regardless of whether anything is redacted. The three Qwen agents screen each
+    document's deliverables and decide ADAPTIVELY what (if anything) to redact
+    (simplest-sufficient: only what warrants it):
+
+      REDACT_CLERK   proposes tier 1-2 redactions,
+      REDACT_AUTHORITY approves tier 3-4 + adversarial test,
+      REDACT_GATE    final pass/fail.
+
+    When a redaction is approved AND passed, it is applied THROUGH the canonical
+    amendments master and the .md/.docx are re-rendered from it (INFRA-033), so
+    the formats stay consistent. Writes only inside the run folder (run_ctx);
+    never touches durable/. Every decision is posted to the run bus.
+
+    Degrades safely (INFRA-034): the agents run on the local Qwen backend; if it
+    is unreachable, run_task returns ok=False and the phase posts REDACTION_SKIPPED
+    and continues — it never crashes a keyless environment. (The Qwen-required
+    startup gate is INFRA-035.)
+
+    When redaction is WAIVED for the run (operator passed --no-redaction-override
+    at the startup gate), this phase still runs structurally but performs no
+    redaction: it records REDACTION_SKIPPED (operator_waived) per document on the
+    bus, consistent with the safe-degrade behavior above."""
+    summary = {}
+    if not redaction_enabled:
+        for doc in op_docs:
+            _post_redaction(orch, doc["id"], "REDACTION_SKIPPED", {"reason": "operator_waived"})
+            summary[doc["id"]] = {"redacted": False, "reason": "operator_waived"}
+        return summary
+    for doc in op_docs:
+        info = deliverables.get(doc["id"]) or {}
+        master_path = info.get("amendments_json")
+        if not master_path:
+            continue
+        try:
+            master = json.loads(Path(master_path).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        amendments = master.get("amendments", [])
+
+        clerk = _build_wrapper("REDACT_CLERK", orch, keys)
+        clerk_r = clerk.run_task(
+            work_payload={"task": "screen_deliverable", "document_id": doc["id"],
+                          "document_name": doc["name"], "amendments": amendments},
+            run_objectives="Screen this deliverable for sensitive content (LAW-IV). "
+                           "Redact ONLY what warrants it; if nothing does, return an empty "
+                           "redactions list.",
+            channel="redaction", max_tokens=1024)
+        if not clerk_r.get("ok"):
+            _post_redaction(orch, doc["id"], "REDACTION_SKIPPED",
+                            {"stage": "REDACT_CLERK", "error": clerk_r.get("error")})
+            summary[doc["id"]] = {"redacted": False, "reason": "redactor_unavailable"}
+            continue
+        redactions = (clerk_r.get("parsed") or {}).get("redactions") or []
+        if not redactions:
+            _post_redaction(orch, doc["id"], "REDACTION_NONE", {"screened_amendments": len(amendments)})
+            summary[doc["id"]] = {"redacted": False, "redactions": 0}
+            continue
+
+        authority = _build_wrapper("REDACT_AUTHORITY", orch, keys)
+        auth_r = authority.run_task(
+            work_payload={"task": "approve_redactions", "document_id": doc["id"],
+                          "redactions": redactions},
+            run_objectives="Approve only defensible redactions; run the adversarial test.",
+            channel="redaction", max_tokens=1024)
+        approved = bool(auth_r.get("ok") and (auth_r.get("parsed") or {}).get("approved"))
+
+        gate = _build_wrapper("REDACT_GATE", orch, keys)
+        gate_r = gate.run_task(
+            work_payload={"task": "final_gate", "deliverable_id": doc["id"],
+                          "redactions": redactions, "approved": approved},
+            run_objectives="Final pass/fail on the redaction set.",
+            channel="redaction", max_tokens=512)
+        passed = bool(gate_r.get("ok") and (gate_r.get("parsed") or {}).get("pass"))
+
+        if not (approved and passed):
+            _post_redaction(orch, doc["id"], "REDACTION_NOT_APPLIED",
+                            {"approved": approved, "passed": passed, "proposed": len(redactions)})
+            summary[doc["id"]] = {"redacted": False, "approved": approved, "passed": passed}
+            continue
+
+        # Apply THROUGH the master, then re-render md/docx from it (canonical-master rule).
+        n = _apply_redactions_to_master(master, redactions)
+        amendment_render.write_amendment_deliverables(
+            master, deliv_dir=run_ctx.deliverables_dir(), doc_id=doc["id"],
+            document_name=doc["name"], body_text=doc["text"],
+            category_for_conv=lambda c: _category_for_conv(c, convention_registry))
+        _post_redaction(orch, doc["id"], "REDACTION_APPLIED",
+                        {"redactions": len(redactions), "field_substitutions": n})
+        summary[doc["id"]] = {"redacted": True, "redactions": len(redactions), "substitutions": n}
+    return summary
 
 
 def _filter_doc(results, doc_id, agent):
@@ -772,49 +909,14 @@ def _category_for_conv(conv_id, registry):
     return None
 
 
-def _render_amendments_md(doc, payload, registry, reference_index):
-    n_uncertain = sum(1 for a in payload.get("amendments", []) if a.get("uncertain"))
-    lines = [f"# {doc['name']} — Proposed amendments", "",
-             f"- generated: {datetime.now(timezone.utc).isoformat()}",
-             f"- amendments: {len(payload.get('amendments', []))}",
-             f"- uncertain: {n_uncertain}",
-             f"- validator errors: {len(payload.get('_validator_errors', []))}"]
-    if payload.get("_validator_errors"):
-        lines.append("\n## Validator errors\n")
-        for e in payload["_validator_errors"]:
-            lines.append(f"- {e}")
-    lines.append("\n## Amendments\n")
-    for i, a in enumerate(payload.get("amendments", []), 1):
-        conv = a.get("convention_ref", "?"); loc = a.get("location", "?")
-        cat = _category_for_conv(conv, registry) or "?"
-        sev = a.get("severity", "?")
-        # Genesis Part XXVI: uncertain findings carry an explicit tag in
-        # every deliverable section so the operator never sees them
-        # silently merged with confident ones.
-        uncertain_tag = "[UNCERTAIN] " if a.get("uncertain") else ""
-        lines.append(
-            f"### {uncertain_tag}Amendment {i} [{conv}] — "
-            f"{a.get('finding_type', cat)} ({sev})"
-        )
-        lines.append("")
-        lines.append(f"**Location:** [{loc}]")
-        lines.append(f"**Action:** {a.get('action', 'flag')}")
-        original = a.get('original_text') or '(unspecified)'
-        lines.append(f"**Original:** {str(original)[:500]}")
-        proposed = a.get('proposed_text')
-        if proposed:
-            lines.append(f"**Proposed:** {str(proposed)[:500]}")
-        lines.append("")
-        lines.append("**Justification:**")
-        comment = a.get("comment", "(missing comment)")
-        if a.get("uncertain") and not comment.lstrip().startswith("[UNCERTAIN]"):
-            comment = "[UNCERTAIN] " + comment
-        lines.append(comment)
-        lines.append("")
-        if a.get("context_refs"):
-            lines.append(f"**Context references:** {', '.join(a['context_refs'])}")
-        lines.append("")
-    return "\n".join(lines)
+def _render_amendments_md(doc, payload, registry, reference_index=None):
+    """Back-compat wrapper. The canonical Markdown render now lives in
+    amendment_render.render_amendments_md, a pure function of the master `payload`.
+    This delegates to it so the master stays the single content source
+    (reference_index is unused; kept only for signature compatibility)."""
+    return amendment_render.render_amendments_md(
+        payload, document_name=doc.get("name", ""),
+        category_for_conv=lambda c: _category_for_conv(c, registry))
 
 
 def _render_per_agent_md(doc, production, audit, conv_review):
@@ -842,10 +944,13 @@ def _render_per_agent_md(doc, production, audit, conv_review):
 
 # ---------- BOOT helpers --------------------------------------------------------------------
 
-def _build_reference_index(project_root, ctx_docs, op_docs, conv_registry):
-    idx_path = project_root / "output" / "audit" / "reference_index.json"
+def _build_reference_index(project_root, ctx_docs, op_docs, conv_registry, run_context=None):
+    # Per-run, regenerated, disposable (Part XXVII §A): write into the current
+    # run's audit/ folder when a run context is given; else legacy output/audit.
+    index_path = run_context.reference_index_path() if run_context is not None else None
+    idx_path = index_path or (project_root / "output" / "audit" / "reference_index.json")
     if idx_path.exists(): idx_path.unlink()
-    idx = ReferenceIndex.open(project_root)
+    idx = ReferenceIndex.open(project_root, index_path=index_path)
     for d in ctx_docs:
         idx.index_document(input_type="context", document_id=d["id"],
                            document_name=d["name"], text=d["text"], max_paragraphs=120)
@@ -895,50 +1000,128 @@ def main(argv=None):
     parser.add_argument("--reset-bus", action="store_true")
     parser.add_argument("--reset-cost", action="store_true")
     parser.add_argument("--run-objectives", default="")
-    parser.add_argument("--save-ontology", metavar="NAME")
-    parser.add_argument("--load-ontology", metavar="NAME")
-    parser.add_argument("--reset-ontology", action="store_true")
-    parser.add_argument("--list-ontologies", action="store_true")
-    parser.add_argument("--overwrite-ontology", action="store_true",
-                        help="allow --save-ontology to overwrite existing")
+    parser.add_argument("--save-snapshot", metavar="NAME")
+    parser.add_argument("--load-snapshot", metavar="NAME")
+    parser.add_argument("--reset-snapshot", action="store_true")
+    parser.add_argument("--list-snapshots", action="store_true")
+    parser.add_argument("--overwrite-snapshot", action="store_true",
+                        help="allow --save-snapshot to overwrite existing")
+    parser.add_argument("--skip-model-check", action="store_true",
+                        help="skip the live deprecated-model gate (e.g. offline runs)")
+    parser.add_argument("--no-redaction-override", action="store_true",
+                        help="per-run waiver: declare THIS run non-sensitive and run with NO "
+                             "redaction (required to proceed when the Qwen backend is unavailable; "
+                             "each use is logged to the governance ledger)")
     args = parser.parse_args(argv)
 
-    # Ontology shortcuts: take action and exit.
-    if args.list_ontologies:
-        for o in list_ontologies(ROOT):
+    # Snapshot shortcuts: take action and exit.
+    if args.list_snapshots:
+        for o in list_snapshots(ROOT):
             print(f"{o['name']:30s} saved_at={o.get('saved_at', '?')} files={len(o.get('files', []))}")
         return 0
-    if args.reset_ontology:
-        summary = reset_ontology(ROOT)
-        print("[ontology] reset:", json.dumps(summary, indent=2))
+    if args.reset_snapshot:
+        summary = reset_snapshot(ROOT)
+        print("[snapshot] reset:", json.dumps(summary, indent=2))
         return 0
-    if args.load_ontology:
-        summary = load_ontology(ROOT, args.load_ontology)
-        print(f"[ontology] loaded {args.load_ontology!r}:", json.dumps(summary, indent=2))
+    if args.load_snapshot:
+        # Thread the operator handler so the amendment tripwire can prompt for
+        # approval if a snapshot's constitution would change existing amendments.
+        summary = load_snapshot(
+            ROOT, args.load_snapshot,
+            operator_handler=(None if args.non_interactive else _interactive_handler),
+            interactive=not args.non_interactive,
+        )
+        print(f"[snapshot] loaded {args.load_snapshot!r}:", json.dumps(summary, indent=2))
         return 0
-    if args.save_ontology:
+    if args.save_snapshot:
         try:
-            target = save_ontology(ROOT, args.save_ontology, overwrite=args.overwrite_ontology)
+            target = save_snapshot(ROOT, args.save_snapshot, overwrite=args.overwrite_snapshot)
         except FileExistsError as e:
-            print(f"[ontology] {e}", file=sys.stderr); return 2
-        print(f"[ontology] saved to {target}")
+            print(f"[snapshot] {e}", file=sys.stderr); return 2
+        print(f"[snapshot] saved to {target}")
         return 0
 
-    # Reset toggles
+    # Per-run output isolation (Part XXVII §A): every run gets its own folder
+    # output/runs/<UTC-timestamp>__<run-id>/. Two runs never overwrite each other.
+    # Durable/protected assets live under durable/ and are never written here.
+    run_ctx = run_context_mod.create_run(ROOT)
+    print(f"[pipeline] run folder: {run_ctx.run_dir.relative_to(ROOT)}", file=sys.stderr)
+
+    # Reset toggles. With per-run folders each run starts empty, so these only
+    # matter if a caller re-points at an existing run; they act on this run's paths.
     if args.reset_bus:
-        bp = ROOT / "output" / "logs" / "agent_bus.jsonl"
+        bp = run_ctx.bus_path()
         if bp.exists(): bp.unlink()
     if args.reset_cost:
-        for p in (ROOT / "output" / "logs" / "cost_tracker.jsonl",
-                  ROOT / "output" / "logs" / "cost_tracker.json"):
+        for p in (run_ctx.cost_jsonl_path(), run_ctx.cost_json_path()):
             if p.exists(): p.unlink()
 
     # Cost tracker (must exist before any agent fires)
-    cost_tracker = CostTracker.open(ROOT / "output" / "logs", print_live=True)
+    cost_tracker = CostTracker.open(run_ctx.logs_dir(), print_live=True)
 
     # Search router (used by date cascade + downstream agents)
     keys = load_api_keys()
     search_router = SearchRouter.open(ROOT, keys=keys)
+
+    # Deprecated-model gate (INFRA-026): resolve every agent's assigned model
+    # against the provider's CURRENT live list and STOP if any is retired.
+    # Never auto-swaps; the operator approves each replacement. Backends whose
+    # live list is unavailable (no key / local Qwen) are skipped gracefully.
+    if not args.skip_model_check:
+        registry_path = ROOT / "config" / "agent_registry.json"
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        handler = None if args.non_interactive else _interactive_handler
+        gate = enforce_current_models(
+            ROOT, registry, keys, interactive=not args.non_interactive,
+            operator_handler=handler, registry_path=registry_path,
+        )
+        for s in gate["skipped"]:
+            print(f"[model-gate] skipped {s['agent']} ({s['backend']}): "
+                  f"cannot verify {s['model']!r} (no key / local backend)", file=sys.stderr)
+        for a in gate["approved"]:
+            print(f"[model-gate] operator-approved swap: {a['agent']} "
+                  f"{a['from']!r} -> {a['to']!r}", file=sys.stderr)
+        if not gate["ok"]:
+            dead = [f"{f['agent']}={f['dead_model']!r}" for f in gate["findings"]]
+            print(f"[model-gate] STOP: deprecated models not approved: {dead}. "
+                  f"Approve a replacement, update agent_registry.json, or pass "
+                  f"--skip-model-check to override.", file=sys.stderr)
+            return 3
+
+    # Qwen-required startup gate (INFRA-035): redaction is the always-on final pass
+    # (INFRA-034) and runs on the local Qwen backend. Refuse to start if Qwen is not
+    # reachable/configured, UNLESS the operator waives redaction for THIS run.
+    qstat = redaction_gate.qwen_backend_status(ROOT)
+    waive = bool(args.no_redaction_override)
+    redaction_enabled = True
+    if waive and not args.non_interactive:
+        # A waiver must be confirmed in interactive mode (conscious, per-run choice).
+        try:
+            confirm = input("--no-redaction-override: declare THIS run NON-SENSITIVE and run with "
+                            "NO redaction? (yes/no): ").strip().lower()
+        except EOFError:
+            confirm = "no"
+        if confirm not in {"yes", "y"}:
+            print("[redaction-gate] override not confirmed; aborting.", file=sys.stderr)
+            return 4
+    if not qstat["configured"] and not waive:
+        print(f"[redaction-gate] STOP: the local Qwen redaction backend is not reachable/configured "
+              f"({qstat['detail']}). Redaction is a required final pass. Set up Qwen "
+              f"(install torch + transformers and the model Qwen/Qwen2.5-7B-Instruct), or re-run "
+              f"with --no-redaction-override to declare this run non-sensitive and proceed without "
+              f"redaction. Pre-run check verifies: {qstat['verified_now']}; actual model load is "
+              f"verified at first call.", file=sys.stderr)
+        return 4
+    if waive:
+        redaction_enabled = False
+        reason = "operator_declared_non_sensitive" if qstat["configured"] else "qwen_unavailable"
+        ledger = redaction_gate.record_redaction_waiver(ROOT, run_ctx.run_id, reason=reason)
+        print(f"[redaction-gate] WAIVED for this run (no redaction; reason={reason}); "
+              f"logged to {ledger.name}.", file=sys.stderr)
+    elif qstat["configured"] and not qstat["gpu"]:
+        # SOFT reminder only — never blocks, never recorded.
+        print("[redaction-gate] note: Qwen reachable but no GPU detected — redaction will be slow "
+              "on CPU.", file=sys.stderr)
 
     # Date cascade + cutoff -> populate input/operational/
     print("[pipeline] date cascade + cutoff", file=sys.stderr)
@@ -975,7 +1158,7 @@ def main(argv=None):
     handler = None if args.non_interactive else _interactive_handler
     orch = TopOrchestrator.boot(ROOT, interactive=not args.non_interactive,
                                  operator_handler=handler, cost_tracker=cost_tracker,
-                                 run_adaptive_spawn=True)
+                                 run_adaptive_spawn=True, run_context=run_ctx)
     orch.run_objectives = args.run_objectives
 
     # Parse conventions -> registry
@@ -987,11 +1170,12 @@ def main(argv=None):
           f"review enabled={convention_review_enabled}", file=sys.stderr)
 
     # Reference index
-    reference_index = _build_reference_index(ROOT, ctx_docs, op_docs, conv_registry_dict)
+    reference_index = _build_reference_index(ROOT, ctx_docs, op_docs, conv_registry_dict,
+                                             run_context=run_ctx)
     print(f"[pipeline] reference index: {len(reference_index.entries)} entries", file=sys.stderr)
 
     # Semantic retrieval layer (genesis Part XXI). Loads from
-    # output/audit/embedding_store.pkl if present, otherwise tries to build
+    # durable/cache/embedding_store.pkl if present, otherwise tries to build
     # from input/context/. Graceful degradation: None means Zipfian fallback.
     embed_store = embedding_store.get_or_build(ROOT, reference_index=reference_index)
     if embed_store is not None:
@@ -1014,6 +1198,7 @@ def main(argv=None):
     )
 
     production, audit, conv_review = [], [], []
+    deliverables = {}
     if op_docs:
         print(f"[pipeline] phase 3-4: content production", file=sys.stderr)
         production = asyncio.run(phase_3_4_content_production(
@@ -1022,9 +1207,9 @@ def main(argv=None):
             [e.as_dict() for e in reference_index.entries if e.input_type == "context"][:30],
             embed_store=embed_store,
         ))
-        # Part XXVII: pull the structural inventory ARCHIVIST produced during
+        # Part XXVI: pull the structural inventory ARCHIVIST produced during
         # the corpus-level phase so downstream phases can pass it to
-        # PRACTICE_AUDITOR / LEGAL_ANALYST per Part XXIV's directive.
+        # PRACTICE_AUDITOR / LEGAL_ANALYST per Part XXIII's directive.
         structural_inventory = _extract_structural_inventory(production)
         print(f"[pipeline] structural inventory elements: {len(structural_inventory)}",
               file=sys.stderr)
@@ -1052,7 +1237,7 @@ def main(argv=None):
                   file=sys.stderr)
 
         # Phase 7: audit synthesis + DELTA escalations
-        synth = AuditSynthesizer(project_root=ROOT, bus=orch.bus)
+        synth = AuditSynthesizer(project_root=ROOT, bus=orch.bus, run_context=run_ctx)
         audit_summary = synth.synthesize(
             verifier_findings=_flatten(audit, "VERIFIER"),
             fact_check_findings=_flatten(audit, "FACT_CHECKER"),
@@ -1067,6 +1252,17 @@ def main(argv=None):
             for d in decisions:
                 print(f"  -> {d['delta_id']} {d['kind']}: {d['decision']} (approved={d['approved']})",
                       file=sys.stderr)
+
+    # Phase 9: redaction (ALWAYS runs — final pass over the deliverables, LAW-IV).
+    # The Qwen agents decide adaptively what (if anything) to redact; any approved
+    # redaction flows through the amendments master and re-renders md/docx.
+    print(f"[pipeline] phase 9: redaction screening"
+          f"{' (WAIVED for this run)' if not redaction_enabled else ''}", file=sys.stderr)
+    redaction_summary = phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx,
+                                          conv_registry_dict, redaction_enabled=redaction_enabled)
+    n_altered = sum(1 for v in redaction_summary.values() if v.get("redacted"))
+    print(f"[pipeline] redaction: {n_altered}/{len(redaction_summary)} deliverable(s) altered "
+          f"(phase always runs; agents decide adaptively)", file=sys.stderr)
 
     # Phase 8: persist
     print(f"\n[pipeline] phase 8: persist + run summary", file=sys.stderr)

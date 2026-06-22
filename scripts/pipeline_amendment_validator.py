@@ -4,7 +4,7 @@ Original rule (Part XVIII Section D): every amendment.comment must contain
 at least one CONV-* and one REF-*. Location must be a REF-* in the
 operational document.
 
-Part XXIV (Absence Detection) carve-out: absence findings, by definition,
+Part XXIII (Absence Detection) carve-out: absence findings, by definition,
 have no REF-* in the reviewed document because the provision is missing.
 The validator now accepts the sentinel string "document-level" as a valid
 `location` for such findings. The comment-citation rule (>=1 CONV-* and
@@ -31,7 +31,7 @@ def validate_amendment_comment(comment: str) -> bool:
 
 
 def _is_valid_location(location: Any) -> bool:
-    """Per Part XXIV: location is valid if it is either a REF-* form OR the
+    """Per Part XXIII: location is valid if it is either a REF-* form OR the
     sentinel string 'document-level' (used for absence findings that have
     no natural anchor in the reviewed document)."""
     if not location:

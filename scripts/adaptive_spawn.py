@@ -14,9 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-_TEXT_EXTENSIONS = {".txt", ".md", ".rst", ".log"}
-_PDF_EXTENSIONS = {".pdf"}
+import durable_paths
+import text_extract
 
 # Generic institutional name extractor: capitalized multi-word names ending in
 # institution-marker words. Domain-specific institutions (any government, any
@@ -97,25 +96,14 @@ def _load_corpus(input_dir):
     out = []
     for p in sorted(input_dir.iterdir()):
         if not p.is_file(): continue
-        ext = p.suffix.lower()
-        try:
-            if ext in _TEXT_EXTENSIONS:
-                out.append((p.name, p.read_text(encoding="utf-8", errors="replace")))
-            elif ext in _PDF_EXTENSIONS:
-                text = _read_pdf_text(p)
-                if text: out.append((p.name, text))
-        except Exception:
+        # Shared format family; unsupported types warn instead of silent skip.
+        if not text_extract.is_supported(p):
+            text_extract.warn_unsupported(p, where=str(input_dir.name))
             continue
+        text = text_extract.extract_text(p)
+        if text.strip():
+            out.append((p.name, text))
     return out
-
-
-def _read_pdf_text(path):
-    try:
-        import pypdf
-        reader = pypdf.PdfReader(str(path))
-        return "\n".join((page.extract_text() or "") for page in reader.pages)
-    except ImportError: return ""
-    except Exception: return ""
 
 
 def _ok(status, path, reason): return {"status": status, "path": str(path), "reason": reason}
@@ -126,7 +114,7 @@ def _no_op_if_present(path, overwrite):
 
 
 def _spawn_situational_awareness(project_root, combined, corpus, *, overwrite):
-    path = project_root / "reference" / "situational_awareness.md"
+    path = durable_paths.situational_awareness_path(project_root)
     if (skipped := _no_op_if_present(path, overwrite)) is not None: return skipped
     try:
         if not corpus: return _ok("skipped", path, "no input documents")
@@ -148,7 +136,7 @@ def _spawn_situational_awareness(project_root, combined, corpus, *, overwrite):
 
 
 def _spawn_linguistic_identity(project_root, combined, corpus, *, overwrite):
-    path = project_root / "reference" / "LINGUISTIC_IDENTITY.md"
+    path = durable_paths.linguistic_identity_path(project_root)
     if (skipped := _no_op_if_present(path, overwrite)) is not None: return skipped
     try:
         if not corpus:
@@ -174,7 +162,7 @@ def _spawn_linguistic_identity(project_root, combined, corpus, *, overwrite):
 
 
 def _spawn_institution_registry(project_root, combined, *, overwrite):
-    path = project_root / "config" / "institution_registry.json"
+    path = durable_paths.institution_registry_path(project_root)
     if (skipped := _no_op_if_present(path, overwrite)) is not None: return skipped
     try:
         counts = _institution_counts(combined)
@@ -191,7 +179,7 @@ def _spawn_institution_registry(project_root, combined, *, overwrite):
 
 
 def _spawn_citation_convention(project_root, combined, *, overwrite):
-    path = project_root / "config" / "citation_convention.json"
+    path = durable_paths.citation_convention_path(project_root)
     if (skipped := _no_op_if_present(path, overwrite)) is not None: return skipped
     try:
         rules = []
@@ -210,7 +198,7 @@ def _spawn_citation_convention(project_root, combined, *, overwrite):
 
 
 def _spawn_speech_acts_taxonomy(project_root, combined, *, overwrite):
-    path = project_root / "config" / "speech_acts_taxonomy.json"
+    path = durable_paths.speech_acts_taxonomy_path(project_root)
     if (skipped := _no_op_if_present(path, overwrite)) is not None: return skipped
     try:
         acts = []

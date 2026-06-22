@@ -4,11 +4,11 @@ Standalone, domain-agnostic document processing swarm governed by an adaptive co
 
 ## Entry point
 
-The founding specification is [genesis.md](genesis.md), Parts I-XVIII. All architectural decisions, the seven seed laws, the agent registry, the message bus protocol, the convention-driven review workflow, and the build sequence live there. When working on this project, read genesis.md before making any change.
+The founding specification is [genesis.md](genesis.md), Parts I–XXVII. All architectural decisions, the seven seed laws, the agent registry, the message bus protocol, the convention-driven review workflow, and the build sequence live there. When working on this project, read genesis.md before making any change.
 
 ## API keys
 
-Stored outside the repository. The relative path to the local `config.py` is in `.env_path`. Never hardcode keys. Never echo key values to logs, output, or commit messages.
+Stored outside the repository. The relative path to the local `config.py` is in `.env_path`. Never hardcode keys. Never echo key values to logs, output, or commit messages. The key reader (`load_api_keys`) reads **API-key values only** from that file via a fixed allowlist; any model variable in it (e.g. a `model = ...` line) is ignored and never affects model selection. Model choice is owned solely by `config/agent_registry.json` (`spec.model`).
 
 ## Three-input-type model (Part XVIII Section A)
 
@@ -20,18 +20,19 @@ Stored outside the repository. The relative path to the local `config.py` is in 
 
 - LAW-IV (privacy) outranks LAW-0 (operator sovereignty) for sensitive-content handling. No exceptions.
 - The operator decides every escalation. No silent self-modification.
-- No domain-specific content in `scripts/`. Domain knowledge lives in `config/` and `reference/`, spawned from `input/context/`.
+- No domain-specific content in `scripts/`. Domain knowledge lives in `config/` (compiled conventions) and `durable/` (learned assets spawned from `input/context/`: `durable/learnings/` and `durable/reference/`).
 - Every convention review finding must cite at least one CONV-* and at least one REF-*.
 - English only for code, config file names, and folder names. No spaces or unicode in paths.
+- Every numbered DELTA is recorded as an amendment in `config/constitution.json` (`amendments[]`) — the canonical log. The README roster lists them all; no DELTA lives only in the roster.
 
 ## How to run
 
 ```
 py -3.9 -X utf8 scripts/verify_session1.py        # verification gate (all sessions)
 py -3.9 scripts/pipeline.py --non-interactive     # full pipeline
-py -3.9 scripts/pipeline.py --list-ontologies     # list saved ontologies
-py -3.9 scripts/pipeline.py --save-ontology NAME  # snapshot learned state
-py -3.9 scripts/pipeline.py --load-ontology NAME  # restore saved snapshot
-py -3.9 scripts/pipeline.py --reset-ontology      # strip back to seed defaults
+py -3.9 scripts/pipeline.py --list-snapshots      # list saved snapshots
+py -3.9 scripts/pipeline.py --save-snapshot NAME  # snapshot learned state
+py -3.9 scripts/pipeline.py --load-snapshot NAME  # restore saved snapshot
+py -3.9 scripts/pipeline.py --reset-snapshot      # strip back to seed defaults
 py -3.9 scripts/bus_viewer.py --follow            # live bus + cost stream
 ```

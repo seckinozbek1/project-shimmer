@@ -2,6 +2,11 @@
 
 API key loading via .env_path, Claude/GPT/Qwen dispatch, contract enforcement,
 bus posting with mandatory constitution_check, cost tracker hook.
+
+The agent registry (config/agent_registry.json) is the SOLE source of each
+agent's model: `spec["backend"]` selects the family (cross-family audit, LAW-III)
+and `spec["model"]` selects the exact model id. The key layer (.env_path ->
+config.py) provides API keys ONLY; it never sets or overrides a model.
 """
 
 from __future__ import annotations
@@ -58,7 +63,16 @@ def load_api_keys() -> dict[str, str]:
     sys.modules["_shimmer_keys"] = mod
     spec.loader.exec_module(mod)
     out = {}
-    for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "BRAVE_API_KEY", "MODEL"):
+    # KEYS ONLY. The external key file (located via .env_path -> an
+    # operator-managed config.py outside the repo) may define anything, but this
+    # reader copies out ONLY the allowlisted API-key names below. Every other
+    # variable in that file is ignored -- in particular any `model` / `MODEL`
+    # (or otherwise model-related) assignment is deliberately NOT read and can
+    # never influence which model an agent runs. Model selection is owned
+    # exclusively by config/agent_registry.json (spec.model). Do NOT add a model
+    # name to this allowlist.
+    _KEY_NAMES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "BRAVE_API_KEY")
+    for k in _KEY_NAMES:
         if hasattr(mod, k):
             out[k] = getattr(mod, k)
     return out
@@ -87,28 +101,41 @@ class AgentWrapper:
     contracts: dict
     keys: dict = field(default_factory=dict)
     cost_tracker: CostTracker | None = None
+    # Per-run context (run_context.RunContext). Threaded from the orchestrator so
+    # every agent writes its run-scoped artifacts (contract-violation dumps) into
+    # the CURRENT run's folder, never a shared global output/ path (Part XXVII §A).
+    run_context: Any = None
 
     def __post_init__(self):
         if self.name not in self.registry:
             raise ValueError(f"agent {self.name!r} not in registry")
         self.spec = self.registry[self.name]
         self.backend = self.spec["backend"]
+        # Registry is the sole source of the agent's model id (no key-layer
+        # override, no hardcoded default).
+        self.model = self.spec.get("model")
         self.contract = self.contracts.get(self.name, {})
         if not self.keys:
             self.keys = load_api_keys()
 
     def _record_cost(self, r):
         if self.cost_tracker is None: return
+        u = r.usage or {}
         self.cost_tracker.record(
             agent=self.name, backend=r.backend, model=r.model,
-            input_tokens=(r.usage or {}).get("input_tokens"),
-            output_tokens=(r.usage or {}).get("output_tokens"),
+            input_tokens=u.get("input_tokens"),
+            output_tokens=u.get("output_tokens"),
+            # Prompt-cache usage (INFRA-036). Anthropic: cache_read/creation;
+            # OpenAI: cached_input_tokens. Absent -> 0 (handled in record()).
+            cache_read_input_tokens=u.get("cache_read_input_tokens"),
+            cache_creation_input_tokens=u.get("cache_creation_input_tokens"),
+            cached_input_tokens=u.get("cached_input_tokens"),
             ok=r.ok, error=r.error,
         )
 
     def check_constitution(self, situation): return self.constitution.check(situation)
 
-    def call_claude(self, prompt, *, max_tokens=4096):
+    def call_claude(self, stable_prefix, dynamic_suffix="", *, max_tokens=4096):
         key = self.keys.get("ANTHROPIC_API_KEY")
         if not key:
             r = CallResult("claude_api", "?", "", ok=False, error="ANTHROPIC_API_KEY not loaded")
@@ -118,27 +145,55 @@ class AgentWrapper:
         except ImportError as e:
             r = CallResult("claude_api", "?", "", ok=False, error=f"anthropic not installed: {e}")
             self._record_cost(r); return r
-        model = self.keys.get("MODEL") or "claude-sonnet-4-20250514"
-        if not model.startswith("claude"): model = "claude-sonnet-4-20250514"
+        model = self.model
+        if not model:
+            # No silent substitution: a missing/invalid model is surfaced, not
+            # quietly replaced. The registry is the sole source of truth.
+            r = CallResult("claude_api", "?", "", ok=False,
+                           error=f"no model configured for agent {self.name!r} in agent_registry.json")
+            self._record_cost(r); return r
+        # Prompt caching (INFRA-036), EXPLICIT for Anthropic: mark the END of the
+        # stable prefix with cache_control so it is written once and read at 0.1x
+        # on subsequent calls. The prefix must be an EXACT match across calls;
+        # build_prompt guarantees no dynamic content precedes the breakpoint.
+        # Default TTL is ephemeral (5 minutes), which fits this workload: a run
+        # fires many agent calls back-to-back within minutes, so the 5-min window
+        # (1.25x write) covers reuse without paying the 2x one-hour write premium.
+        if stable_prefix:
+            content = [{"type": "text", "text": stable_prefix,
+                        "cache_control": {"type": "ephemeral"}}]
+            if dynamic_suffix:
+                content.append({"type": "text", "text": dynamic_suffix})
+        else:
+            content = [{"type": "text", "text": dynamic_suffix}]
         try:
             client = anthropic.Anthropic(api_key=key)
             resp = client.messages.create(model=model, max_tokens=max_tokens,
-                                          messages=[{"role": "user", "content": prompt}])
+                                          messages=[{"role": "user", "content": content}])
         except Exception as e:
             r = CallResult("claude_api", model, "", ok=False, error=f"{type(e).__name__}: {e}")
             self._record_cost(r); return r
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        # Cache fields (absent on older models / SDKs -> 0, never crash).
         r = CallResult("claude_api", model, text, usage={
             "input_tokens": getattr(resp.usage, "input_tokens", None),
             "output_tokens": getattr(resp.usage, "output_tokens", None),
+            "cache_creation_input_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0) or 0,
+            "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0) or 0,
         })
         self._record_cost(r); return r
 
-    def call_gpt(self, prompt, *, max_tokens=4096):
+    def call_gpt(self, stable_prefix, dynamic_suffix="", *, max_tokens=4096):
         with _GPT_SEMAPHORE:
-            return self._call_gpt_locked(prompt, max_tokens=max_tokens)
+            return self._call_gpt_locked(stable_prefix, dynamic_suffix, max_tokens=max_tokens)
 
-    def _call_gpt_locked(self, prompt, *, max_tokens=4096):
+    def _call_gpt_locked(self, stable_prefix, dynamic_suffix="", *, max_tokens=4096):
+        # Prompt caching (INFRA-036), AUTOMATIC for OpenAI: no cache_control. We
+        # only STRUCTURE the prompt stable-prefix-first (identical discipline as
+        # Claude) so OpenAI's automatic prefix cache actually catches, then verify
+        # it via the logged cached_tokens field below.
+        prompt = stable_prefix + ("\n\n" + dynamic_suffix if (stable_prefix and dynamic_suffix)
+                                  else dynamic_suffix)
         key = self.keys.get("OPENAI_API_KEY")
         if not key:
             r = CallResult("openai_api", "?", "", ok=False, error="OPENAI_API_KEY not loaded")
@@ -148,7 +203,11 @@ class AgentWrapper:
         except ImportError as e:
             r = CallResult("openai_api", "?", "", ok=False, error=f"openai not installed: {e}")
             self._record_cost(r); return r
-        model = "gpt-4o"
+        model = self.model
+        if not model:
+            r = CallResult("openai_api", "?", "", ok=False,
+                           error=f"no model configured for agent {self.name!r} in agent_registry.json")
+            self._record_cost(r); return r
 
         def _attempt():
             try:
@@ -173,9 +232,20 @@ class AgentWrapper:
             r = CallResult("openai_api", model, "", ok=False, error=err)
             self._record_cost(r); return r
         text = resp.choices[0].message.content or ""
+        # OpenAI reports the auto-cached prefix in usage.prompt_tokens_details
+        # .cached_tokens (object OR dict, depending on SDK). Absent -> 0, never
+        # crash. Logging it makes a silent provider-side cache loss visible (the
+        # cached count drops to zero in the cost log) instead of hidden.
+        cached = 0
+        details = getattr(resp.usage, "prompt_tokens_details", None)
+        if isinstance(details, dict):
+            cached = details.get("cached_tokens") or 0
+        elif details is not None:
+            cached = getattr(details, "cached_tokens", 0) or 0
         r = CallResult("openai_api", model, text, usage={
             "input_tokens": getattr(resp.usage, "prompt_tokens", None),
             "output_tokens": getattr(resp.usage, "completion_tokens", None),
+            "cached_input_tokens": cached,
         })
         self._record_cost(r); return r
 
@@ -186,7 +256,11 @@ class AgentWrapper:
         except ImportError as e:
             r = CallResult("qwen_local", "qwen2.5-7b", "", ok=False, error=f"torch/transformers missing: {e}")
             self._record_cost(r); return r
-        model_id = os.environ.get("SHIMMER_QWEN_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+        model_id = self.model
+        if not model_id:
+            r = CallResult("qwen_local", "?", "", ok=False,
+                           error=f"no model configured for agent {self.name!r} in agent_registry.json")
+            self._record_cost(r); return r
         try:
             tok = transformers.AutoTokenizer.from_pretrained(model_id)
             mdl = transformers.AutoModelForCausalLM.from_pretrained(model_id, device_map="auto", load_in_4bit=True)
@@ -203,10 +277,16 @@ class AgentWrapper:
         })
         self._record_cost(r); return r
 
-    def dispatch(self, prompt, **kwargs):
-        if self.backend == "claude_api": return self.call_claude(prompt, **kwargs)
-        if self.backend == "openai_api": return self.call_gpt(prompt, **kwargs)
-        if self.backend == "qwen_local": return self.call_qwen(prompt, **kwargs)
+    def dispatch(self, stable_prefix, dynamic_suffix="", **kwargs):
+        """Route a cache-structured (stable_prefix, dynamic_suffix) prompt to the
+        backend. Claude marks the stable prefix as an explicit cache breakpoint;
+        GPT concatenates stable-first for OpenAI's automatic prefix cache; Qwen
+        (local, no caching) receives the plain concatenation."""
+        if self.backend == "claude_api": return self.call_claude(stable_prefix, dynamic_suffix, **kwargs)
+        if self.backend == "openai_api": return self.call_gpt(stable_prefix, dynamic_suffix, **kwargs)
+        if self.backend == "qwen_local":
+            full = stable_prefix + ("\n\n" + dynamic_suffix if dynamic_suffix else "")
+            return self.call_qwen(full, **kwargs)
         return CallResult(self.backend, "?", "", ok=False, error=f"unknown backend {self.backend!r}")
 
     def parse_contract_output(self, raw):
@@ -271,7 +351,10 @@ class AgentWrapper:
         the operator can recover what the model actually produced. The bus
         message stores only an excerpt; this file holds the complete output.
 
-        Path: output/audit/contract_violations/{agent}_{timestamp}.txt
+        Path: <run_dir>/audit/contract_violations/{agent}_{timestamp}.txt — the
+        CURRENT run's folder (run-awareness threaded in from the orchestrator).
+        If no run context was supplied (e.g. an isolated unit construction), it
+        falls back to output/audit/contract_violations/ so nothing is lost.
         Returns the path on success, or None if persistence failed (never
         raises — recovery is best-effort and must not interrupt the pipeline).
         """
@@ -279,7 +362,10 @@ class AgentWrapper:
             return None
         try:
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-            out_dir = project_root() / "output" / "audit" / "contract_violations"
+            if self.run_context is not None:
+                out_dir = self.run_context.contract_violations_dir()
+            else:
+                out_dir = project_root() / "output" / "audit" / "contract_violations"
             out_dir.mkdir(parents=True, exist_ok=True)
             path = out_dir / f"{self.name}_{ts}.txt"
             header = (
@@ -320,6 +406,50 @@ class AgentWrapper:
                 f"Otherwise return a single JSON object. No markdown fences.\n\n"
                 f"## Work payload\n{work_str}\n")
 
+    def _stable_agent_block(self) -> str:
+        """The per-agent STABLE prompt block: identity + DO/DO-NOT + directives +
+        output contract. Identical across this agent's calls within a run; carries
+        no per-call/dynamic content. Same text as the corresponding parts of
+        prompt_template (only relocated to the front for caching)."""
+        does = "\n".join(f"- {d}" for d in self.spec.get("does", []))
+        does_not = "\n".join(f"- {d}" for d in self.spec.get("does_not", []))
+        cf = self.contract.get("fields", {}); required = self.contract.get("required", [])
+        directives = self.contract.get("directives") or []
+        directives_block = ""
+        if directives:
+            directives_block = "## Directives (from contract)\n" + "\n".join(
+                f"- {d}" for d in directives
+            ) + "\n\n"
+        return (f"You are {self.name}, a Project Shimmer agent.\n\n"
+                f"## You DO\n{does}\n\n"
+                f"## You DO NOT (LAW-II)\n{does_not}\n\n"
+                f"{directives_block}"
+                f"## Output contract (return JSON only)\n"
+                f"Fields: {cf}\nRequired keys: {required}\n"
+                f"If multiple findings (per claim/per paragraph/per amendment), return a JSON array of objects.\n"
+                f"Otherwise return a single JSON object. No markdown fences.\n")
+
+    def build_prompt(self, pkg, work):
+        """Cache-structured prompt as (stable_prefix, dynamic_suffix), INFRA-036.
+
+        stable_prefix = agent stable block + constitution + conventions — the
+        largest identical-across-calls block, with NO dynamic content. It is the
+        explicit cache breakpoint on the Claude path and the auto-cached prefix on
+        the GPT path. dynamic_suffix = per-call context (objectives, precedents,
+        retrieved passages, recent bus) + the work payload.
+
+        Same information as prompt_template(pkg.as_text(), work), only reordered
+        stable-first (constitution/conventions and the output contract move ahead
+        of the per-call sections)."""
+        work_str = work if isinstance(work, str) else json.dumps(work, ensure_ascii=False, indent=2)
+        stable = self._stable_agent_block()
+        st = pkg.stable_text()
+        if st:
+            stable = stable + "\n## Context\n" + st
+        dyn = pkg.dynamic_text()
+        dynamic = (dyn + "\n\n" if dyn else "") + f"## Work payload\n{work_str}\n"
+        return stable, dynamic
+
     def run_task(self, *, work_payload, run_objectives="", channel="main",
                  recipient="ORCHESTRATOR", recent_bus_limit=30, max_tokens=4096,
                  relevant_precedent_ids=None, convention_registry=None,
@@ -335,7 +465,10 @@ class AgentWrapper:
             convention_registry=convention_registry,
             reference_index_excerpt=reference_index_excerpt,
         )
-        prompt = self.prompt_template(pkg.as_text(), work_payload)
+        # Cache-structured prompt (INFRA-036): stable prefix first, dynamic suffix
+        # last, so Claude (explicit cache_control) and GPT (automatic prefix cache)
+        # both reuse the stable prefix across calls.
+        stable_prefix, dynamic_suffix = self.build_prompt(pkg, work_payload)
         # Per-agent token ceiling override from contract (e.g., ARCHIVIST=4096
         # to fit the corpus-level structural inventory). The contract's
         # max_output_tokens wins over the caller-supplied max_tokens because
@@ -345,9 +478,9 @@ class AgentWrapper:
         if isinstance(contract_max, int) and contract_max > 0:
             max_tokens = max(max_tokens, contract_max)
         if self.backend == "qwen_local":
-            result = self.dispatch(prompt, max_new_tokens=min(max_tokens, 1024))
+            result = self.dispatch(stable_prefix, dynamic_suffix, max_new_tokens=min(max_tokens, 1024))
         else:
-            result = self.dispatch(prompt, max_tokens=max_tokens)
+            result = self.dispatch(stable_prefix, dynamic_suffix, max_tokens=max_tokens)
         if not result.ok:
             self.post_to_bus(recipient=recipient, channel=channel, msg_type="YIELD",
                              body={"event": "BACKEND_ERROR", "backend": result.backend, "model": result.model,
@@ -362,7 +495,7 @@ class AgentWrapper:
             # Persist the full raw_text to disk so post-mortem analysis can
             # recover what the model actually produced. The bus message keeps
             # only a 400-char excerpt for readability; the full text lives at
-            # output/audit/contract_violations/{agent}_{timestamp}.txt.
+            # <run_dir>/audit/contract_violations/{agent}_{timestamp}.txt.
             raw_text_path = self._persist_contract_violation_raw_text(
                 result.raw_text, missing
             )

@@ -1,5 +1,6 @@
 """Recovery harness: re-runs phase 6 (synthesis + deliverables) using already-paid-for
-agent outputs harvested from output/logs/agent_bus.jsonl.
+agent outputs harvested from a run's logs/agent_bus.jsonl (output/runs/<run>/;
+--run selects the folder, default latest).
 
 Replays AMENDMENT_DRAFTER for any document that doesn't already have its
 amendments.json deliverable. Re-generates all summaries + docx + amendments .md
@@ -8,6 +9,7 @@ from the existing data.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import io
 import json
@@ -29,6 +31,7 @@ from pipeline import (
     _render_per_agent_md, phase_6_synthesis, _truncate,
 )
 from pipeline_amendment_validator import validate_amendment_payload
+import run_context as run_context_mod
 from summary_generators import render_context_summary, render_operative_summary
 
 
@@ -83,11 +86,12 @@ def _shape_results_from_bus(bus_outputs: dict, op_docs: list[dict],
 
 
 async def _recover_and_synthesize(op_docs, ctx_docs, production, audit, conv_review,
-                                   conv_registry_dict, reference_index, run_objectives):
-    cost_tracker = CostTracker.open(ROOT / "output" / "logs", print_live=True)
+                                   conv_registry_dict, reference_index, run_objectives,
+                                   run_ctx):
+    cost_tracker = CostTracker.open(run_ctx.logs_dir(), print_live=True)
     orch = TopOrchestrator.boot(
         ROOT, interactive=False, operator_handler=None,
-        cost_tracker=cost_tracker, run_adaptive_spawn=False,
+        cost_tracker=cost_tracker, run_adaptive_spawn=False, run_context=run_ctx,
     )
     orch.run_objectives = run_objectives
     keys = load_api_keys()
@@ -100,7 +104,20 @@ async def _recover_and_synthesize(op_docs, ctx_docs, production, audit, conv_rev
 
 
 def main():
-    bus_path = ROOT / "output" / "logs" / "agent_bus.jsonl"
+    ap = argparse.ArgumentParser(description="Re-run phase 6 from a run's harvested bus outputs")
+    ap.add_argument("--run", help="run folder name under output/runs/ (default: latest run)")
+    args = ap.parse_args()
+    if args.run:
+        run_ctx = run_context_mod.for_run_dir(ROOT, run_context_mod.runs_root(ROOT) / args.run)
+    else:
+        run_ctx = run_context_mod.latest_run(ROOT)
+    if run_ctx is None or not run_ctx.run_dir.is_dir():
+        print("[recover] no run folder found under output/runs/. Pass --run <name>.",
+              file=sys.stderr)
+        return 2
+    print(f"[recover] target run: {run_ctx.run_dir.relative_to(ROOT)}", file=sys.stderr)
+
+    bus_path = run_ctx.bus_path()
     bus_outputs = _harvest_agent_outputs_from_bus(bus_path)
     print("[recover] bus outputs by sender:", file=sys.stderr)
     for k, v in sorted(bus_outputs.items()):
@@ -113,7 +130,8 @@ def main():
 
     conv_registry = parse_conventions(ROOT)
     conv_dict = conv_registry.as_dict()
-    reference_index = _build_reference_index(ROOT, ctx_docs, op_docs, conv_dict)
+    reference_index = _build_reference_index(ROOT, ctx_docs, op_docs, conv_dict,
+                                             run_context=run_ctx)
     print(f"[recover] {len(op_docs)} operational docs, {len(ctx_docs)} context docs, "
           f"{len(conv_dict.get('conventions', []))} conventions, "
           f"{len(reference_index.entries)} reference entries", file=sys.stderr)
@@ -135,7 +153,7 @@ def main():
     )
     deliv, cost_tracker = asyncio.run(_recover_and_synthesize(
         op_docs, ctx_docs, production, audit, conv_review,
-        conv_dict, reference_index, run_objectives))
+        conv_dict, reference_index, run_objectives, run_ctx))
 
     print("\n=== recovery summary ===", file=sys.stderr)
     for doc_id, paths in deliv.items():
@@ -156,7 +174,7 @@ def main():
         "__amendments.json", "__amendments.md", "__amendments.docx",
         "__deliverable.md",
     )
-    deliv_dir = ROOT / "output" / "deliverables"
+    deliv_dir = run_ctx.deliverables_dir()
     missing_count = 0
     for doc in op_docs:
         for suffix in expected_suffixes:

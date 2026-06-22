@@ -22,7 +22,7 @@
 
 ---
 
-# PART I — THE SEVEN SEED LAWS
+## Part I — THE SEVEN SEED LAWS
 
 These laws are the initial constitution of every Shimmer project.
 They are ordered by priority — a lower law cannot override a higher
@@ -32,7 +32,7 @@ from operation.
 
 Store in config/constitution.json under "seed_laws".
 
-## Law 0 — Operator sovereignty
+## LAW-0 — Operator sovereignty
 
 The operator is the sole source of constitutional authority. No agent,
 task force, supervisor, or orchestrator may create, amend, or repeal
@@ -41,7 +41,7 @@ behavior. Silence in the constitution means escalate — never assume
 permission. Every operator decision on an escalation is recorded as
 legislation (precedent, task force law, or amendment) for future runs.
 
-## Law I — Do no harm to the source
+## LAW-I — Do no harm to the source
 
 No agent may alter, fabricate, or suppress information from source
 documents. An agent may flag, annotate, footnote, and warn — but the
@@ -49,7 +49,7 @@ source record is sacred. When source content conflicts with external
 evidence, both are preserved and the operator decides. No agent may
 resolve a factual conflict by choosing one version over another.
 
-## Law II — Know your bounds
+## LAW-II — Know your bounds
 
 Each agent has a fixed capability set defined in the agent registry.
 An agent may request another agent's service but may not perform
@@ -58,7 +58,7 @@ outside its defined scope must stop and yield to the appropriate
 agent. The capability boundary is the agent's identity — crossing
 it is not initiative, it is malfunction.
 
-## Law III — No self-audit
+## LAW-III — No self-audit
 
 No model may verify, fact-check, or audit output that was generated
 by the same model family. Claude-generated content is audited by GPT
@@ -67,7 +67,7 @@ models. Local model output is audited by cloud models. The audit
 trail must show which model produced and which model verified every
 output segment.
 
-## Law IV — Protect what is private
+## LAW-IV — Protect what is private
 
 Sensitive content — PII, classified material, institutional secrets,
 content marked for redaction — must be processed exclusively by
@@ -77,7 +77,7 @@ machine. This law cannot be overridden by any subsequent legislation,
 precedent, amendment, or operator instruction. It outranks Law 0 for
 this specific scope. A single leak is irreversible.
 
-## Law V — Remember before you act
+## LAW-V — Remember before you act
 
 Before executing any search, verification, or computation, an agent
 must check in order: (a) the constitution for governing law, (b) the
@@ -87,7 +87,7 @@ the first match found. Only when all four are silent may the agent
 proceed with a novel action — and that action's outcome must be
 recorded for future consultation.
 
-## Law VI — Structure is earned, not assumed
+## LAW-VI — Structure is earned, not assumed
 
 All organizational structure below the Top Orchestrator emerges from
 identified work. Agents form task forces by drafting charters.
@@ -101,7 +101,7 @@ justify its existence.
 
 ---
 
-# PART II — AGENTS
+## Part II — AGENTS
 
 ## Agent registry
 
@@ -142,14 +142,15 @@ agent proposals.
 The registry is extensible. To add a new agent:
 1. Define it in config/agent_registry.json with name, DOES, DOES NOT
 2. Assign a model
-3. Create its wrapper in scripts/agents/
+3. Add its output schema to config/agent_contracts.json (agent_wrapper.AgentWrapper
+   drives every agent by its registry name — there is no per-agent code file)
 4. Log as a DELTA
 5. Never combine it with an existing agent — if the role is distinct
    enough to need an agent, it stays separate
 
 ---
 
-# PART III — HIERARCHY AND GOVERNANCE
+## Part III — HIERARCHY AND GOVERNANCE
 
 ## Top Orchestrator
 
@@ -202,7 +203,7 @@ Skipping a level is a constitutional violation.
 
 ---
 
-# PART IV — CONSTITUTION ENGINE
+## Part IV — CONSTITUTION ENGINE
 
 ## The four layers of legislation
 
@@ -265,7 +266,7 @@ class Constitution:
 
 ---
 
-# PART V — EMERGENT TASK FORCES
+## Part V — EMERGENT TASK FORCES
 
 ## Charter schema
 
@@ -325,11 +326,12 @@ When a task force completes its work:
 
 ---
 
-# PART VI — MESSAGE BUS
+## Part VI — MESSAGE BUS
 
 ## Implementation
 
-The bus is a JSONL file at output/logs/agent_bus.jsonl.
+The bus is a JSONL file at the run's logs/agent_bus.jsonl
+(output/runs/<UTC-timestamp>__<run-id>/logs/agent_bus.jsonl; Part XXVII §A).
 One JSON line per message. Append-only. Never truncated, never
 edited. This is the permanent audit trail.
 
@@ -377,7 +379,7 @@ Token budget per backend:
 
 ---
 
-# PART VII — MULTI-MODEL ARCHITECTURE
+## Part VII — MULTI-MODEL ARCHITECTURE
 
 ## Model routing
 
@@ -428,6 +430,36 @@ agent prompts separated by role markers. Same for GPT-4o.
 Cloud calls (Claude + GPT) run in parallel via asyncio.gather()
 alongside local Qwen calls.
 
+## Prompt caching (INFRA-036)
+
+Both cloud call paths reuse a cached stable prompt prefix to cut input-token
+cost. Every agent prompt is assembled stable-prefix-first: a STABLE PREFIX
+(agent identity + DO/DO-NOT + directives + output contract + constitution +
+compiled conventions) that is identical across that agent's calls within a run,
+followed by a DYNAMIC SUFFIX (run objectives, precedents, retrieved passages,
+recent bus, work payload).
+
+- **Claude path — EXPLICIT.** call_claude marks the end of the stable prefix with
+  `cache_control: {type: ephemeral}` (5-minute TTL — a run fires its agent calls
+  back-to-back within minutes, so the 5-min window covers reuse without the 2x
+  one-hour write premium). Cache reads bill at 0.1x input; the 5-min write at
+  1.25x. Anthropic requires an EXACT prefix match, so the prefix must contain NO
+  dynamic content.
+- **GPT path — STRUCTURE-AND-LOG.** OpenAI caches automatically with no
+  cache_control; call_gpt does NOT add one. It only structures the prompt
+  stable-prefix-first so OpenAI's automatic prefix cache catches, then verifies it
+  via logging.
+- **Measured, not trusted.** The cost tracker logs each provider's cache fields
+  per call (Anthropic `cache_creation_input_tokens` / `cache_read_input_tokens`;
+  OpenAI `prompt_tokens_details.cached_tokens`), defaulting to 0 when absent. A
+  silent provider-side cache loss shows up as the cached count dropping to zero in
+  the cost log, not hidden.
+- **THE RULE:** no dynamic content (timestamp, run id, per-call text, retrieved
+  passages, bus) may enter the stable prefix — doing so changes the prefix per
+  call and drops the hit rate to near zero. Caching only takes effect above each
+  model's minimum cacheable prefix size; a small-prompt agent that does not meet
+  it simply does not cache. Never pad to reach the threshold.
+
 ## Hardware constraints
 
 Target hardware: NVIDIA RTX 3070 Ti (8GB VRAM), Windows, py -3.9.
@@ -443,11 +475,11 @@ Target hardware: NVIDIA RTX 3070 Ti (8GB VRAM), Windows, py -3.9.
 
 ---
 
-# PART VIII — SEARCH STACK
+## Part VIII — SEARCH STACK
 
 ## Free search cascade
 
-1. **Discovered APIs** — check config/discovered_apis.json first.
+1. **Discovered APIs** — check durable/learnings/discovered_apis.json first.
    If a known free API serves this institution, use it.
 2. **Direct site fetch** — for claims referencing known institutions
    (UN, WTO, World Bank, ISO), HTTP fetch the official page.
@@ -487,7 +519,7 @@ a dedup_key are searched once.
 ## API discovery
 
 During search, the router watches for free API patterns. When found:
-1. Log to config/discovered_apis.json as PENDING
+1. Log to durable/learnings/discovered_apis.json as PENDING
 2. Post API_DISCOVERED to bus
 3. Orchestrator escalates to operator for approval
 4. If approved: becomes top-priority tier for that institution
@@ -496,16 +528,16 @@ During search, the router watches for free API patterns. When found:
 
 ---
 
-# PART IX — MEMORY LAYER
+## Part IX — VERIFICATION CACHE LAYER
 
-## Three tiers
+## Two durable tiers
 
-### Tier 1 — Within-run cache
-Location: output/audit/search_cache.json
-Deduplicates within a single run. Cleared on next run.
+Both tiers live under the protected durable/ tree (INFRA-030). The numbering
+keeps tier-2 and tier-3 (the prior within-run tier-1 session cache was retired by
+INFRA-034: it was opened but never written).
 
-### Tier 2 — Cross-run project memory
-Location: config/verification_memory.json
+### Tier 2 — Cross-run project cache
+Location: durable/cache/verification_cache.json
 Persists across runs. Claims stored with verdict, source,
 date, and TTL.
 
@@ -518,23 +550,23 @@ TTL by claim type:
 
 Expired claims are re-verified on next encounter.
 
-### Tier 3 — Cross-project global memory
-Location: config/global_verification_memory.json
+### Tier 3 — Cross-project global cache
+Location: durable/global/verification_cache_global.json
 Shared across Shimmer projects (if multiple exist).
 
-## Memory protocol (implements Law V)
+## Verification cache protocol (implements Law V)
 
-Before any search: check tier 1, then 2, then 3. First valid
+Before any search: check tier 2 (project), then tier 3 (global). First valid
 (within-TTL) hit wins. Post MEMORY_HIT to bus. Store new results
 at all applicable tiers.
 
 ---
 
-# PART X — LEARNING LOOP
+## Part X — LEARNING LOOP
 
 ## Search strategy learnings
 
-Location: config/search_strategy_learnings.json
+Location: durable/learnings/search_strategy_learnings.json
 
 Tracks which query strategies succeed per claim type. If
 site:worldbank.org fails but site:imf.org works for GDP data,
@@ -557,10 +589,10 @@ When a project runs for the first time with empty reference/ and
 no config assets, the pipeline discovers and generates:
 
 a. Language, institutions, format conventions → situational_awareness.md
-b. Linguistic register identity → reference/LINGUISTIC_IDENTITY.md
-c. Citation conventions → config/citation_convention.json
-d. Speech act taxonomy → config/speech_acts_taxonomy.json
-e. Institution registry → config/institution_registry.json
+b. Linguistic register identity → durable/reference/LINGUISTIC_IDENTITY.md
+c. Citation conventions → durable/learnings/citation_convention.json
+d. Speech act taxonomy → durable/learnings/speech_acts_taxonomy.json
+e. Institution registry → durable/learnings/institution_registry.json
 f. Project-specific rules learned from first run → prompts/project_rules.md
 
 After the first run, the project has everything it needs.
@@ -568,16 +600,26 @@ No manual seeding required.
 
 ---
 
-# PART XI — PIPELINE LIFECYCLE
+## Part XI — PIPELINE LIFECYCLE
 
 ```
 BOOT
   Load constitution
-  Load verification memory (all tiers)
+  Load verification cache (durable tiers 2-3)
   Load search strategy learnings
   Load discovered APIs
   Initialize message bus
   Initialize Top Orchestrator
+  Deprecated-model gate (per-agent live model check).
+  Qwen-required startup gate (INFRA-035): confirm the local Qwen redaction
+    backend is reachable/configured BEFORE any agent runs. If it is not, REFUSE
+    the run — unless the operator waives redaction for THIS run only via
+    --no-redaction-override (and an interactive confirmation when interactive),
+    which is logged to the governance ledger (durable/governance/, with timestamp
+    + run id). Pre-run the gate verifies torch+transformers importable + a
+    qwen_local model id configured; the actual model load is verified at first
+    redaction call. GPU absence is a SOFT printed reminder only — never a blocker,
+    never recorded.
 
 PHASE 1 — SITUATION ASSESSMENT
   Orchestrator broadcasts input to all agents.
@@ -598,14 +640,14 @@ PHASE 3 — PARALLEL EXECUTION
 
 PHASE 4 — CONTENT PRODUCTION
   PROCESSOR drafts with all gathered context.
-  STYLE_GUARDIAN checks register (Qwen local).
-  REDACT applies redaction (Qwen local).
+  STYLE_GUARDIAN checks register.
+  (Redaction is a dedicated final pass — see REDACTION below.)
 
 PHASE 5 — VERIFICATION AND AUDIT
   VERIFIER (GPT-4o): output vs source consistency.
   FACT_CHECKER (GPT-4o + web): external claim verification.
   PRACTICE_AUDITOR (GPT-4o + web): best practice compliance.
-  Shared search cache. Structured JSON verdicts.
+  Structured JSON verdicts.
 
 PHASE 6 — SYNTHESIS
   Claude merges structured findings into:
@@ -615,11 +657,21 @@ PHASE 6 — SYNTHESIS
 
 PHASE 7 — LEARN
   Task forces dissolve. Charters become TF-laws.
-  Verification memory updated.
+  Verification cache updated.
   Search strategy learnings updated.
   Discovered APIs logged (pending approval).
   DELTAs proposed from audit patterns.
   Constitution updated with new legislation.
+
+REDACTION — FINAL PASS, ALWAYS RUNS (pipeline phase 9; after synthesis, before persist; LAW-IV)
+  The three Qwen redaction agents (REDACT_CLERK proposes tier 1-2,
+  REDACT_AUTHORITY approves tier 3-4 + adversarial test, REDACT_GATE final
+  pass/fail) screen each document's deliverables at the output boundary and
+  decide ADAPTIVELY what, if anything, to redact. An approved + passed redaction
+  is applied THROUGH the amendments master and the md/docx are re-rendered from
+  it, so the formats stay consistent (Part XXVII §E). Run-scoped only — never
+  touches durable/. Every decision is posted to the run bus. Degrades safely if
+  the local Qwen backend is unreachable (skip-with-warning, no crash).
 
 PHASE 8 — PERSIST
   All learnings written to config.
@@ -629,41 +681,57 @@ PHASE 8 — PERSIST
 
 ---
 
-# PART XII — DIRECTORY STRUCTURE
+## Part XII — DIRECTORY STRUCTURE
 
 ```
 project_shimmer/
   genesis.md                          ← THIS FILE
   CLAUDE.md                           ← project entry point
   config/
-    constitution.json                 ← seed laws + emergent legislation
+    constitution.json                 ← seed laws + emergent legislation (governance)
     agent_registry.json               ← agent definitions (DOES/DOES NOT/model)
     agent_contracts.json              ← structured output schemas per agent
     gpu_config.json                   ← hardware configuration
-    verification_memory.json          ← cross-run claim cache (tier 2)
-    global_verification_memory.json   ← cross-project cache (tier 3)
-    discovered_apis.json              ← free APIs found during search
-    search_strategy_learnings.json    ← query routing optimization
-    institution_registry.json         ← auto-built from documents
-    citation_convention.json          ← auto-discovered citation rules
-    speech_acts_taxonomy.json         ← auto-built pragmatic taxonomy
+    convention_registry.json          ← compiled CONV-* rules (regenerated each run)
+    review_scope.json                 ← operator cutoff config
+  durable/                            ← PROTECTED class (Part XXVII §B / INFRA-030);
+                                        outside any auto-cleaned tree; never wiped
+                                        by per-run cleanup. Survives reset by location.
+    cache/
+      embedding_store.pkl             ← semantic store (tier-2 retrieval)
+      verification_cache.json         ← cross-run claim cache (tier 2)   [resettable]
+    global/
+      verification_cache_global.json  ← cross-project cache (tier 3)     [survives reset]
+    learnings/
+      institution_registry.json       ← auto-built from documents        [resettable]
+      citation_convention.json        ← auto-discovered citation rules    [resettable]
+      speech_acts_taxonomy.json       ← auto-built pragmatic taxonomy     [resettable]
+      search_strategy_learnings.json  ← query routing optimization        [resettable]
+      discovered_apis.json            ← free APIs found during search     [resettable]
+      document_dates.json             ← resolved document dates           [resettable]
+    reference/
+      LINGUISTIC_IDENTITY.md          ← auto-generated register profile   [resettable]
+      situational_awareness.md        ← auto-generated domain profile     [resettable]
+    governance/
+      model_approvals.json            ← operator model-approval ledger   [survives reset]
+      constitution_guard_log.jsonl    ← amendment-guard decision log     [survives reset]
   input/                              ← drop documents here
-  output/
-    deliverables/                     ← final processed outputs
-    audit/
-      claim_registry.json             ← extracted claims per run
-      search_cache.json               ← within-run search dedup (tier 1)
-      fact_check_report.md
-      practice_audit_report.md
-      verification_report.md
-      audit_synthesis.md
-    logs/
-      agent_bus.jsonl                 ← permanent audit trail
-      run_summary_{date}.md
-      api_usage_log.md
-  reference/
-    LINGUISTIC_IDENTITY.md            ← auto-generated from source docs
-    situational_awareness.md          ← auto-generated domain profile
+  output/                             ← DISPOSABLE per-run artifacts (INFRA-032)
+    runs/
+      <UTC-timestamp>__<run-id>/      ← one folder per run; runs never overwrite
+        deliverables/                 ← final processed outputs (per doc_id key)
+        audit/
+          reference_index.json        ← REF-* index (per-run, regenerated)
+          audit_synthesis.md
+          delta_proposals.json
+          contract_violations/        ← <agent>_<ts>.txt raw outputs
+        logs/
+          agent_bus.jsonl             ← this run's message bus
+          cost_tracker.{jsonl,json}
+          run_summary_{date}.md
+  reference/                          ← static operator references (learned
+                                        register/awareness assets now live under
+                                        durable/reference/, see above)
   prompts/
     project_rules.md                  ← project-specific rules (auto + manual)
   scripts/
@@ -672,7 +740,7 @@ project_shimmer/
     message_bus.py                    ← bus read/write/query
     bus_reader.py                     ← context package assembly
     search_router.py                  ← DDG/Brave/API cascade
-    memory.py                         ← three-tier verification memory
+    verification_cache.py             ← three-tier verification cache
     claim_classifier.py               ← claim extraction and typing
     agent_wrapper.py                  ← base class for agent API calls
     agents/                           ← one file per agent wrapper
@@ -694,7 +762,9 @@ project_shimmer/
 - All outputs go to output/ subdirectories
 - All config goes to config/
 - All reference material goes to reference/
-- No loose files at project root except genesis.md and CLAUDE.md
+- No loose files at project root except genesis.md, CLAUDE.md, README.md,
+  requirements.txt, .gitignore, project_shimmer_cover.png, and the
+  external-key pointer .env_path
 - No scripts in config/, no config in scripts/
 - No output files in input/, no input files in output/
 - No hardcoded paths — everything relative to project root
@@ -702,10 +772,15 @@ project_shimmer/
   lives exclusively in config/ and reference/
 - No spaces in paths. No unicode in folder names.
 - English only for all code and config file names.
+- Per-run isolation, the durable-vs-disposable firewall, naming, format-master,
+  and separation-of-concerns rules are governed in full by Part XXVII
+  (Pipeline Hygiene Standard), which is the single source of truth for file
+  organization across the entire pipeline. Where this list and Part XXVII
+  overlap, Part XXVII governs.
 
 ---
 
-# PART XIII — DEPENDENCIES
+## Part XIII — DEPENDENCIES
 
 ## Python (py -3.9, Anaconda)
 
@@ -732,7 +807,7 @@ BRAVE_API_KEY = "..."        # Optional, free tier
 
 ---
 
-# PART XIV — BUILD SEQUENCE
+## Part XIV — BUILD SEQUENCE
 
 ## Session 1: Foundation (3-4 hours)
 
@@ -754,7 +829,8 @@ Build in order:
 12. Build scripts/orchestrator.py — TopOrchestrator class
      with run(), deliberation_round(), evaluate_charter(),
      escalate_to_operator()
-13. Create thin agent wrappers in scripts/agents/ for each agent
+13. (No per-agent files: agent_wrapper.AgentWrapper drives every agent by its
+    registry name, using config/agent_registry.json + config/agent_contracts.json)
 
 Test: place a single test document in input/. Run orchestrator.
 Agents should assess, propose, and execute sequentially. Bus
@@ -764,11 +840,11 @@ should log everything with constitution checks.
 
 1. Build scripts/search_router.py — DDG/Brave/API cascade
 2. Build scripts/claim_classifier.py — claim extraction and typing
-3. Build scripts/memory.py — three-tier cache with TTL
+3. Build scripts/verification_cache.py — three-tier cache with TTL
 4. Add charter proposal/approval/dissolution flow to orchestrator
 5. Add task force formation and scoped channels to bus
 6. Add TF-law codification to constitution engine
-7. Initialize empty JSON files: verification_memory,
+7. Initialize empty JSON files: verification_cache,
    discovered_apis, search_strategy_learnings
 
 Test: place a document with statistics in input/. Watch agents
@@ -791,7 +867,7 @@ precedents get created from operator decisions.
 
 ---
 
-# PART XV — VERIFICATION CHECKLIST
+## Part XV — VERIFICATION CHECKLIST
 
 Before declaring complete, ALL must PASS:
 
@@ -799,7 +875,7 @@ Before declaring complete, ALL must PASS:
 |---|-------|
 | 1 | Directory structure matches Part XII exactly |
 | 2 | config/constitution.json has 7 seed laws, valid JSON |
-| 3 | config/agent_registry.json has 13 agents with DOES/DOES NOT/model |
+| 3 | config/agent_registry.json has 14 agents with DOES/DOES NOT/model |
 | 4 | config/agent_contracts.json has output schemas for all agents |
 | 5 | constitution.py loads and check() works against all 4 layers |
 | 6 | constitution.py match_tf_law() returns confidence scores |
@@ -813,7 +889,7 @@ Before declaring complete, ALL must PASS:
 | 14 | Charter dissolution codifies TF-law in constitution |
 | 15 | search_router.py executes DDG search |
 | 16 | claim_classifier.py extracts and types claims |
-| 17 | memory.py checks all three tiers with TTL |
+| 17 | verification_cache.py checks all three tiers with TTL |
 | 18 | Agent output matches contract schema (valid JSON) |
 | 19 | Every bus message has constitution_check field |
 | 20 | run_summary generates with correct statistics |
@@ -828,11 +904,16 @@ Before declaring complete, ALL must PASS:
 | 29 | CLAUDE.md points to this genesis file |
 | 30 | Full pipeline completes on a test document without crash |
 
+The implemented gate (`scripts/verify_session1.py`) runs **39** checks
+total, not 30: check 00 (`ast.parse` smoke over all modules) + checks
+1-30 above + checks 31-37 (Part XVIII Section F) + check 38 (embedding
+store build/query, Part XXI). Arithmetic: 1 + 30 + 7 + 1 = 39.
+
 Print the table with Status and Detail columns. ALL must be PASS.
 
 ---
 
-# PART XVI — WHAT THIS SPEC DOES NOT COVER
+## Part XVI — WHAT THIS SPEC DOES NOT COVER
 
 Deliberate non-goals for this genesis. May become future work
 after the swarm has been operational for several runs:
@@ -849,7 +930,7 @@ after the swarm has been operational for several runs:
 
 ---
 
-# PART XVII — LESSONS CARRIED FORWARD
+## Part XVII — LESSONS CARRIED FORWARD
 
 These lessons come from prior work. They are encoded in the
 architecture, not as dependencies:
@@ -868,7 +949,9 @@ architecture, not as dependencies:
   is not initiative — it is malfunction. This is Law II.
 
 - DIRECTORY DISCIPLINE: Every file has exactly one correct location.
-  Misplaced files are bugs.
+  Misplaced files are bugs. (Codified in full by Part XXVII — Pipeline
+  Hygiene Standard, including per-run isolation and the durable-vs-disposable
+  firewall that protects cumulative learning.)
 
 - IN-PLACE REDACTION: Sensitive content is handled by offline
   agents only. No copies, no backups of unredacted content.
@@ -881,7 +964,7 @@ architecture, not as dependencies:
 - OPERATOR PRIMACY: The pipeline proposes, the operator decides.
   No automated self-modification. This is Law 0.
 
-# PART XVIII — GENESIS AMENDMENT: Convention-driven review architecture
+## Part XVIII — GENESIS AMENDMENT: Convention-driven review architecture
 
 # Append this to genesis.md after Part XVII.
 # This amendment adds four capabilities to the Shimmer architecture:
@@ -940,6 +1023,21 @@ input/
 Replace the flat input/ directory with three subdirectories.
 The pipeline refuses to run the convention review workflow
 (Section C below) if input/conventions/ is empty.
+
+### Supported input formats (INFRA-027)
+
+All three input paths accept the same format family, extracted by one shared
+utility (scripts/text_extract.py): .pdf, .docx, .html/.htm, .txt, .md, .rst,
+.log, and .json. Every reader — the corpus/operational loader, the embedding
+store (Part XXI), the convention parser (Section E), the date cascade
+(Part XXIV), and adaptive spawn (Part X) — routes through this one extractor, so
+the accepted family is identical everywhere and semantic retrieval embeds every
+accepted format, not just PDF. Optional libraries (pypdf, python-docx,
+beautifulsoup4) are imported lazily; a missing one degrades to a clear warning
+for that format rather than a crash. A file whose extension is outside the
+family is logged with a warning and skipped — never silently dropped. (The
+Part XIX corpus-acquisition validator remains PDF-specific by design: it
+guards files DOWNLOADED from the web, distinct from operator-supplied inputs.)
 
 ### How each type flows through the pipeline
 
@@ -1208,6 +1306,17 @@ Every claim in the comment must have a bracketed reference.
 An amendment without at least one CONV-* and one REF-* is a
 contract violation.
 
+### Direction-aware output (INFRA-028)
+
+The tracked-changes `.docx` renders each paragraph and run in its correct
+reading direction, decided from the content's own script with no hardcoded
+direction assumption: right-to-left scripts (Arabic, Hebrew, and any other RTL
+script) receive bidi paragraphs, RTL runs, right justification, and a bidi
+language tag; left-to-right content stays default. Direction is applied per run,
+so mixed-direction content (for example an RTL passage quoting an LTR case name)
+lays out correctly. The design is language-agnostic; the implementation applies
+the right direction per detected script.
+
 ### Deliverable structure (amends Part XII)
 
 For each operational document at or after the cutoff:
@@ -1358,7 +1467,8 @@ Add:
 
 1. Build the convention review phase (phase 5.5) in pipeline.py
 2. Build the context_summary and operative_summary generators
-3. Build scripts/agents/amendment_drafter.py
+3. Define AMENDMENT_DRAFTER in config/agent_registry.json + config/agent_contracts.json
+   (driven by agent_wrapper.AgentWrapper; no per-agent file)
 4. Wire AMENDMENT_DRAFTER output into the deliverable structure
 5. Implement the citation format enforcement in contract validation
 6. Test with a constructed convention set and operational document
@@ -1401,7 +1511,13 @@ This rule is implemented through the existing search_router.py infrastructure. N
 
 ## Part XXI — Semantic Retrieval Layer
 
-The reference index supports a vector embedding layer for context filtering. When an embedding store is available, agent context assembly uses cosine similarity retrieval instead of Zipfian term matching. The embedding store is part of the ontology snapshot and persists across runs via save/load. The REF-* citation format remains identical regardless of which retrieval method is active — agents and deliverables do not know or care whether a REF was found via string matching or semantic similarity. If no embedding store exists (fresh domain, no sentence-transformers installed), the pipeline falls back to Zipfian filtering silently. This is a graceful degradation, not an error.
+The reference index supports a vector embedding layer for context filtering. When an embedding store is available, agent context assembly uses cosine similarity retrieval instead of Zipfian term matching. The embedding store is part of the snapshot and persists across runs via save/load. The REF-* citation format remains identical regardless of which retrieval method is active — agents and deliverables do not know or care whether a REF was found via string matching or semantic similarity. If no embedding store exists (fresh domain, no sentence-transformers installed), the pipeline falls back to Zipfian filtering silently. This is a graceful degradation, not an error.
+
+### Per-document language and per-language embedding model (INFRA-028)
+
+Each context document's dominant language is detected (offline, per document — one dominant language per document, not per passage). A small language→model registry selects the embedding model: English (and undetected) documents use the fast English-centric model; a positively-detected non-English language uses a multilingual model (extensible with a language-specialized model where clearly better). An unavailable model degrades to the multilingual or English default with a warning, never silently.
+
+Passages embedded by different models are not numerically comparable. The store therefore keeps one sub-store per model and records which model embedded each passage; a query is embedded separately by each model and compared only against that model's passages, so every similarity is a valid same-model cosine, and results are merged for the global top-k. Staleness accounts for the model used: a rebuild is triggered by a change to the context filename set OR to the language→model registry. Direction-aware deliverable output (RTL/LTR) is covered in Part XVIII Section D.
 
 Semantic retrieval must be granular. A single per-document query does not produce sufficiently diverse context for agents reviewing multiple provisions within that document. When an agent reviews a specific provision, the embedding query should be derived from that provision's text, not from the document's first page. This ensures that an agent reviewing a biometric identification clause retrieves passages about biometric identification from the corpus, not generic passages about the document's overall topic. The pipeline achieves this by running per-provision queries during context assembly, not per-document queries at boot time. The per-document query remains as a fallback when provision-level text is not available.
 
@@ -1433,11 +1549,7 @@ These principles are not convention rules. They do not carry CONV-* identifiers.
 
 ---
 
-(Part XXIII is reserved.)
-
----
-
-## Part XXIV — Absence Detection
+## Part XXIII — Absence Detection
 
 Agents must not limit their review to provisions present in the reviewed document. The context corpus and conventions together define what a complete document in this domain should contain. When the context corpus shows that a structural element, safeguard, mechanism, or provision is standard practice across multiple reference documents, its absence from the reviewed document is a finding.
 
@@ -1451,7 +1563,7 @@ Absence detection is not self-activating from genesis alone. It requires explici
 
 ---
 
-## Part XXV — Metadata Hierarchy
+## Part XXIV — Metadata Hierarchy
 
 When extracting document attributes (date, title, author, issuing body), the pipeline prioritizes content-derived signals over container-derived signals:
 
@@ -1469,7 +1581,7 @@ The filename-derived date signal is a four-digit numeric sequence parseable from
 
 ---
 
-## Part XXVI — Uncertain Findings
+## Part XXV — Uncertain Findings
 
 When an agent produces a finding but cannot determine its correctness with confidence, it must not silently commit or silently discard. The agent posts the finding to the bus with a confidence marker:
 
@@ -1487,10 +1599,202 @@ This applies to all agent outputs, not just metadata extraction. For metadata sp
 
 ---
 
-## Part XXVII — Structural Inventory
+## Part XXVI — Structural Inventory
 
 During corpus-level processing (the phases where ARCHIVIST, INST_FINDER, and CITATION_RESOLVER run against the full context corpus), the pipeline must also produce a structural inventory: a list of structural elements, mechanisms, safeguards, and provisions that appear across the context corpus, along with the count of how many documents contain each element. Examples of structural elements include but are not limited to: risk classification systems, conformity assessment procedures, post-market monitoring provisions, redress mechanisms, transparency obligations, human oversight requirements, prohibited practices lists, environmental sustainability provisions, cross-border data flow provisions, and definitions sections.
 
 The inventory is not hardcoded. It is derived dynamically from the corpus by the corpus-level agents. The ARCHIVIST agent is responsible for producing the inventory as part of its output. The inventory is stored on the bus and included in the context package for PRACTICE_AUDITOR and LEGAL_ANALYST when they review operational documents.
 
 When PRACTICE_AUDITOR or LEGAL_ANALYST reviews an operational document, they compare the document's contents against the structural inventory. Any element present in more than half the corpus documents but absent from the operational document is posted as an absence finding with action "flag", location "document-level", and REF-* citations to the corpus documents where the element does appear.
+
+---
+
+## Part XXVII — Pipeline Hygiene Standard
+
+This Part is the single source of truth for how the pipeline organizes files,
+names things, and protects what it learns. It consolidates and supersedes the
+scattered hygiene rules in Part XII (Directory discipline), Part XVII (Directory
+discipline lesson), and the pre-convention hygiene DELTAs (INFRA-017 directory
+hygiene, INFRA-018 agent hygiene, INFRA-019 variable hygiene). Where an earlier
+Part states a narrower rule, this Part governs. Every future change to the
+pipeline — cosmetic or internal — must conform to this standard.
+
+The firewall in §B is in force as ratified DELTA INFRA-029 (operator-approved;
+see config/constitution.json). It is enforced by the constitutional-amendment
+tripwire in scripts/constitution_guard.py and by a snapshot-first,
+governance-preserving reset_snapshot in scripts/snapshot_manager.py.
+
+### A. Per-run isolation
+
+Every run writes the artifacts it produces into its own run-scoped folder keyed
+by a run id and timestamp (`output/runs/<UTC-timestamp>__<run-id>/`, run id =
+8 random hex chars so two runs in the same second never collide). Runs never
+overwrite one another: two runs over the same corpus produce two distinct run
+folders. The folder's internal structure is:
+
+```
+output/runs/<UTC-timestamp>__<run-id>/
+  deliverables/   per-document deliverables (<doc_id>__*.md/.json/.docx)
+  logs/           agent_bus.jsonl, cost_tracker.{jsonl,json}, run_summary_*.md
+  audit/          reference_index.json, audit_synthesis.md, delta_proposals.json,
+                  contract_violations/
+```
+
+Within a run folder, per-document artifacts are keyed so that two operational
+documents sharing a filename stem cannot collide (the doc key keeps the bare stem
+when unique and qualifies it as `<stem>__<ext>` on collision, so `policy.pdf` and
+`policy.docx` become `policy__pdf` / `policy__docx`). The run path is computed
+once at boot in `scripts/run_context.py` (a single source of truth modeled on
+`durable_paths.py`); every per-run writer — the bus, cost tracker, deliverables,
+reference index, audit synthesis, and the agent-layer
+contract-violation dumps — derives its path from that RunContext rather than
+hardcoding an `output/` subpath. Run-awareness reaches the agents because the
+orchestrator threads the RunContext into every AgentWrapper. Per-run isolation
+applies ONLY to what a run produces — never to what the pipeline accumulates (§B);
+the protected durable class lives under `durable/` and is structurally
+unreachable from any per-run cleanup of `output/runs/`.
+
+### B. The durable-versus-disposable firewall (the protected class)
+
+Cumulative, learned, and durable assets are a PROTECTED class. No per-run
+cleanup, no automatic reorganization, and no normal pipeline operation may
+delete, truncate, or destructively relocate any member of this class. The
+mechanisms that exist to discard learning (snapshot reset / load) are the only
+exception, and only under the constraints in §B.2.
+
+**B.1 — The protected class (explicit):**
+
+- the embedding store / semantic cache;
+- the verification cache, both project (tier 2) and global cross-project
+  (tier 3);
+- discovered/learned assets: institution registry, citation conventions, speech
+  act taxonomy, search-strategy learnings, discovered APIs, document dates;
+- the linguistic identity and situational-awareness reference assets;
+- the constitution AND its accumulated legislation — seed laws, amendments
+  (the operator-decision/DELTA ledger), precedents, task-force laws;
+- the governance ledger of operator approvals (e.g. model-approval records);
+- saved snapshots;
+- the reserved cross-run knowledge-graph / GNN ontology area.
+
+**B.2 — Rules of the firewall:**
+
+1. Per-run cleanup, per-run folders, and any reorganization act ONLY on a run's
+   own produced artifacts. They must be structurally incapable of reaching the
+   protected class — the protected class must not live inside any per-run or
+   otherwise auto-cleaned tree.
+2. Snapshot reset/load are the sole authorized way to discard or replace learned
+   state, and only as an EXPLICIT operator action. Reset is non-destructive by
+   construction: it ALWAYS writes a backup snapshot before stripping anything,
+   and aborts the reset rather than strip if the backup fails. Reset never
+   silently destroys an unrecoverable asset.
+3. The governance history — the constitution's amendments[]/precedents/task-force
+   laws and the operator-approval ledger — survives reset entirely, untouched.
+   Reset strips resettable DOMAIN LEARNING (discovered institutions/citations/
+   speech-acts/search learnings/per-domain caches, embeddings, reference assets,
+   project_rules), not the audit record of operator decisions.
+4. Any attempt to MODIFY or DELETE an existing entry in the constitution's
+   amendments[] or seed_laws — from ANY code path (Constitution.save,
+   reset/load/snapshot, or any agent) — is intercepted by the amendment tripwire
+   (scripts/constitution_guard.py): it STOPS and requires explicit operator
+   approval before proceeding; without approval it does not happen. Appending a
+   NEW amendment (the normal DELTA path) is allowed. Agents cannot bypass it —
+   they have no direct write path to constitution.json, and the guard denies any
+   protected change lacking an approving operator decision. This approval must
+   also surface in any future UI.
+5. Absence of a protected asset is NOT a failure signal (see §D); it is created
+   on demand and reused. Its destruction, however, is a defect.
+
+### C. Naming conventions
+
+Names state purpose. No vague names. Patterns are consistent across the whole
+pipeline (files and folders, not just `output/`):
+
+- A name says what the thing is and, where relevant, what produced it and when.
+- One canonical, documented pattern per artifact family; do not invent ad-hoc
+  variants. Per-run folders carry the run id + timestamp; per-document artifacts
+  carry a collision-safe document key (§A).
+- English only; no spaces, no unicode in path components (carried from Part XII).
+- A renamed or re-homed identifier updates every reference in both directions
+  (the rename-hygiene discipline used throughout this project).
+
+### D. Folder-purpose signaling and emptiness-as-signal
+
+Each folder's purpose is unambiguous from its name and this standard. Emptiness
+is a diagnostic signal, read against the artifact's class:
+
+- A missing or empty PER-RUN artifact that a healthy run always produces (e.g. a
+  run's deliverables, run summary, audit synthesis) signals that a phase failed
+  or was skipped.
+- Absence of a CONDITIONAL artifact (contract-violation dumps, redaction
+  outputs, within-run search cache, operator-approval records) is normal — it
+  means that path did not trigger.
+- Absence of a DURABLE/protected asset (embedding store, caches) is normal — it
+  is built on demand.
+
+The standard must make these three cases distinguishable by where the artifact
+lives, so that "missing = broken" holds only for the per-run always-produced
+class.
+
+### E. Format-master rule
+
+Each logical output has ONE canonical master format. Other formats are rendered
+or derived from that master on demand, not written independently. The amendments
+output is the model and is implemented this way (INFRA-033): the
+`amendments_payload` dict — serialized verbatim as `<doc_id>__amendments.json` —
+is the MASTER, and the Markdown and tracked-changes `.docx` are PURE FUNCTIONS of
+that one payload (master in → format out). All three are written by a single
+entry point, `amendment_render.write_amendment_deliverables(payload, …)`; no
+render reads amendment content from any other source, so the files cannot drift.
+A render may take presentation-only inputs that cannot change which amendments
+appear — e.g. the `.docx` takes the original document text as the *canvas* it
+anchors tracked-change marks into; amendments that do not anchor still render in
+an "Additional amendments" section, so the `.docx` always reflects the full
+master set. A cheap drift-guard assertion in the entry point confirms each render
+reflects the master's amendment count before the files are returned.
+
+The same discipline governs other multi-form outputs: the cost tracker's
+`cost_tracker.jsonl` is the append-only event master and `cost_tracker.json` is a
+recomputed aggregate view of those events (two legitimate purposes — audit trail
+vs. fast-read totals — never independent sources); audit synthesis writes
+`audit_synthesis.md` and `delta_proposals.json` as two views of one `summary`
+object. New outputs follow the same shape — never generate the "same" result
+twice through independent code paths that can drift.
+
+### F. Separation of concerns
+
+Durable, transient, reports, governance, and failure-dumps must not be
+intermixed in one folder. The present `output/audit/` junk-drawer — which mixes a
+durable binary cache, a transient within-run cache, audit reports, a governance
+ledger, failure dumps, and verify-gate test caches — is the anti-pattern this
+standard exists to end. Each concern gets its own clearly-named home; durable
+assets live OUTSIDE the per-run / disposable tree (§B).
+
+### G. Universality
+
+These rules apply across the entire pipeline, to both cosmetic and internal
+hygiene. Every writer, every cleanup, every reorganization, and every future
+feature must conform. A change that cannot conform must be escalated to the
+operator, not worked around. "Every file has exactly one correct location;
+misplaced files are bugs" (Part XVII) is the spirit; this Part is the letter.
+
+### H. Numbering discipline (append-only)
+
+Part numbers must form an unbroken sequence with no gaps. New Parts are added
+ONLY by appending the next sequential number at the end of the document; a Part
+is never inserted mid-sequence, never given an out-of-order number, and never
+left as a reserved or skipped slot that opens a gap. A renumber (shifting Parts
+to close a gap) is performed ONLY to repair an accidental gap, and only with full
+upstream/downstream reference updates in lockstep (every "see Part N" cross-
+reference, the README index/tree, the verify gate, and every `genesis_part` field
+in config/constitution.json), and any edit to a `genesis_part` value inside an
+existing amendment must go THROUGH the constitutional-amendment tripwire (§B.2)
+with explicit operator approval — never bypassed.
+
+The same append-only discipline governs amendment IDs: the `INFRA-0xx` DELTA
+identifiers in config/constitution.json `amendments[]` are already append-only and
+must remain so — an ID is never reused, never inserted between existing IDs, and
+never renumbered. Amendment IDs are independent of Part numbers; a Part renumber
+never moves an amendment ID.
+
+Rationale: append-only numbering keeps every existing reference stable and
+prevents breakage; gaps and insertions are how cross-references silently rot.

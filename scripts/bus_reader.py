@@ -73,6 +73,26 @@ class ContextPackage:
     def as_text(self):
         return "\n\n".join(f"=== {h} ===\n{b}" for h, b in self.as_prompt_sections())
 
+    # Prompt-caching split (INFRA-036): the context sections that are IDENTICAL
+    # across an agent's calls within a run (constitution + compiled conventions)
+    # vs. the per-call dynamic sections (objectives, precedents, retrieved
+    # passages, recent bus, work payload). The stable sections join the agent's
+    # stable prompt prefix; the dynamic sections go in the per-call suffix. NO
+    # dynamic content (timestamp / run id / per-call text) may be classed stable.
+    _STABLE_HEADERS = ("CONSTITUTION", "CONVENTION_REGISTRY")
+
+    def stable_sections(self):
+        return [(h, b) for h, b in self.as_prompt_sections() if h in self._STABLE_HEADERS]
+
+    def dynamic_sections(self):
+        return [(h, b) for h, b in self.as_prompt_sections() if h not in self._STABLE_HEADERS]
+
+    def stable_text(self):
+        return "\n\n".join(f"=== {h} ===\n{b}" for h, b in self.stable_sections())
+
+    def dynamic_text(self):
+        return "\n\n".join(f"=== {h} ===\n{b}" for h, b in self.dynamic_sections())
+
 
 def _stringify(p):
     return p if isinstance(p, str) else json.dumps(p, ensure_ascii=False, indent=2)

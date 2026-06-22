@@ -98,6 +98,7 @@ def main(argv=None):
     _enable_utf8()
     p = argparse.ArgumentParser(description="Colorized Shimmer bus viewer")
     p.add_argument("--path")
+    p.add_argument("--run", help="run folder name under output/runs/ (default: latest)")
     p.add_argument("--follow", action="store_true")
     p.add_argument("--channel"); p.add_argument("--type", dest="msg_type"); p.add_argument("--sender")
     p.add_argument("--no-color", action="store_true")
@@ -105,9 +106,41 @@ def main(argv=None):
     args = p.parse_args(argv)
 
     use_color = (not args.no_color) and sys.stdout.isatty()
-    path = (Path(args.path) if args.path
-            else Path(__file__).resolve().parent.parent / "output" / "logs" / "agent_bus.jsonl")
+    # Target resolution (Part XXVII §A). Explicit target wins and stays fixed:
+    #   --path FILE  -> that exact bus file
+    #   --run NAME   -> output/runs/<NAME>/logs/agent_bus.jsonl
+    # With neither, auto-latest tracks the newest run under output/runs/. In
+    # --follow auto-latest mode the viewer waits for the first run if none exists
+    # yet and switches to a newer run if one appears after launch.
+    root = Path(__file__).resolve().parent.parent
+    import run_context as run_context_mod
+    explicit = bool(args.path or getattr(args, "run", None))
+
+    if args.path:
+        path = Path(args.path)
+    elif getattr(args, "run", None):
+        path = run_context_mod.for_run_dir(root, run_context_mod.runs_root(root) / args.run).bus_path()
+    else:
+        rc = run_context_mod.latest_run(root)
+        if rc is None and not args.follow:
+            print("[bus_viewer] no run folder under output/runs/. Pass --path or --run.",
+                  file=sys.stderr)
+            return 2
+        path = rc.bus_path() if rc is not None else None
+
+    auto_latest = args.follow and not explicit
+    # Auto-latest + follow with no run yet: wait for the first run rather than error.
+    if path is None:
+        print("[bus_viewer] waiting for the first run under output/runs/ ...", file=sys.stderr)
+        while path is None:
+            time.sleep(1.0)
+            rc = run_context_mod.latest_run(root)
+            if rc is not None:
+                path = rc.bus_path()
+        print(f"[bus_viewer] following run {path.parent.parent.name}", file=sys.stderr)
+
     cost_path = path.parent / "cost_tracker.jsonl"
+    # Initial history dump (the bus file may not exist yet; _read_jsonl returns []).
     msgs, offset = _read_jsonl(path)
     msgs = _apply_filters(msgs, channel=args.channel, msg_type=args.msg_type, sender=args.sender)
     if args.tail > 0: msgs = msgs[-args.tail:]
@@ -120,6 +153,15 @@ def main(argv=None):
     try:
         while True:
             time.sleep(0.5)
+            # Auto-latest only: if a newer run folder appeared, switch to it.
+            if auto_latest:
+                rc = run_context_mod.latest_run(root)
+                if rc is not None and rc.bus_path() != path:
+                    path = rc.bus_path()
+                    cost_path = path.parent / "cost_tracker.jsonl"
+                    offset = 0; cost_offset = 0
+                    print(f"--- switched to newer run {path.parent.parent.name} ---",
+                          file=sys.stderr)
             new_msgs, offset = _read_jsonl(path, offset_bytes=offset)
             new_msgs = _apply_filters(new_msgs, channel=args.channel, msg_type=args.msg_type, sender=args.sender)
             for m in new_msgs: print(_format(m, use_color=use_color)); sys.stdout.flush()

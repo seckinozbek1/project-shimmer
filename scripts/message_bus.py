@@ -1,6 +1,7 @@
 """Message bus for Project Shimmer.
 
-Append-only JSONL at output/logs/agent_bus.jsonl. Every message must
+Append-only JSONL at the path supplied by the caller — per run, that is
+output/runs/<run>/logs/agent_bus.jsonl (Part XXVII §A). Every message must
 include a constitution_check field (LAW-V) or the bus rejects it.
 """
 
@@ -107,7 +108,7 @@ class MessageBus:
             raise ProtocolViolation(f"sender_role must be one of {sorted(VALID_ROLES)}, got {msg['sender_role']!r}")
         if msg["type"] not in VALID_TYPES:
             raise ProtocolViolation(f"type must be one of {sorted(VALID_TYPES)}, got {msg['type']!r}")
-        # Genesis Part XXVI: optional uncertain flag. When present it must be
+        # Genesis Part XXV: optional uncertain flag. When present it must be
         # a bool. Defaults to False on the validated output so consumers can
         # always rely on the key existing without performing a key-presence check.
         if "uncertain" in msg and not isinstance(msg["uncertain"], bool):

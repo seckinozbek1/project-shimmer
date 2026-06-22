@@ -2,12 +2,19 @@
 # Versions pinned to those currently installed in the working environment.
 # Standard-library modules and in-repo modules under scripts/ are excluded.
 
-# PDF parsing (corpus intake, document dating)
+# Input-format support (shared text_extract family: .pdf/.docx/.html/.htm/
+#   .txt/.md/.rst/.log/.json). Heavy libs are imported lazily; a missing one
+#   degrades to a clear warning + skip rather than a crash.
+# PDF parsing (corpus intake, document dating, embedding store)
 pypdf==6.10.2
 
-# Tracked-changes .docx generation (AMENDMENT_DRAFTER deliverables)
+# .docx: tracked-changes generation (AMENDMENT_DRAFTER deliverables) AND
+#   .docx input extraction (text_extract)
 python-docx==1.2.0
 lxml==6.1.0
+
+# .html/.htm input extraction (text_extract); uses the builtin html.parser
+beautifulsoup4==4.12.3
 
 # Draft-resolution PDF builder
 fpdf2==2.8.4
@@ -15,6 +22,16 @@ fpdf2==2.8.4
 # Semantic retrieval layer (Part XXI embedding store)
 sentence-transformers==4.1.0
 numpy==2.0.2
+
+# Multilingual support (INFRA-028): per-document language detection drives
+#   per-language embedding-model selection, and direction-aware .docx output.
+# langdetect is offline + lightweight (no network, no large model); imported
+#   lazily — if absent, documents are treated as 'und' (English default model)
+#   and script-based RTL/LTR direction still works (it needs no library).
+langdetect==1.0.9
+# Non-English embedding model is a sentence-transformers model id downloaded at
+#   runtime (no pip package): sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+#   — if unavailable, embedding_store degrades to the English default with a warning.
 
 # Free web-search cascade (external reference discovery)
 ddgs==9.8.0

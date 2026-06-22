@@ -18,10 +18,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+import text_extract
 
-_TEXT_EXTENSIONS = {".md", ".txt", ".rst"}
+
+_TEXT_EXTENSIONS = {".md", ".txt", ".rst", ".log"}
 _JSON_EXTENSIONS = {".json"}
-_PDF_EXTENSIONS = {".pdf"}
+# Binary / markup formats: extract plain text via the shared extractor, then
+# parse it with the same markdown / list / prose logic as native text files.
+_EXTRACT_EXTENSIONS = {".pdf", ".docx", ".html", ".htm"}
 
 
 _SEVERITY_PATTERNS = [
@@ -83,13 +87,18 @@ def parse_conventions(project_root: Path) -> ConventionRegistry:
         if not path.is_file():
             continue
         ext = path.suffix.lower()
-        registry.source_files.append(path.name)
         if ext in _JSON_EXTENSIONS:
+            registry.source_files.append(path.name)
             registry.conventions.extend(_parse_json(path, seq))
         elif ext in _TEXT_EXTENSIONS:
+            registry.source_files.append(path.name)
             registry.conventions.extend(_parse_text(path, seq))
-        elif ext in _PDF_EXTENSIONS:
-            registry.conventions.extend(_parse_pdf(path, seq))
+        elif ext in _EXTRACT_EXTENSIONS:
+            registry.source_files.append(path.name)
+            registry.conventions.extend(_parse_extracted(path, seq))
+        else:
+            # No silent drop: an unrecognized file in input/conventions/ warns.
+            text_extract.warn_unsupported(path, where="input/conventions")
     return registry
 
 
@@ -150,6 +159,10 @@ def _parse_json(path, seq):
 
 def _parse_text(path, seq):
     text = path.read_text(encoding="utf-8", errors="replace")
+    return _parse_text_lines(text, path.name, seq)
+
+
+def _parse_text_lines(text, source_name, seq):
     out = []
     current_category = _DEFAULT_CATEGORY
     current_section = "preamble"
@@ -164,7 +177,7 @@ def _parse_text(path, seq):
             return []
         return [ConventionRule(
             id=_next_id(seq), category=category, rule=joined,
-            source_file=path.name, source_location=location,
+            source_file=source_name, source_location=location,
             severity=_classify_severity(joined), action=_classify_action(joined),
         )]
 
@@ -186,7 +199,7 @@ def _parse_text(path, seq):
             if stripped:
                 out.append(ConventionRule(
                     id=_next_id(seq), category=current_category, rule=stripped,
-                    source_file=path.name, source_location=f"line {line_num}",
+                    source_file=source_name, source_location=f"line {line_num}",
                     severity=_classify_severity(stripped), action=_classify_action(stripped),
                 ))
             continue
@@ -201,20 +214,14 @@ def _parse_text(path, seq):
     return [r for r in out if r.rule and len(r.rule) >= 16]
 
 
-def _parse_pdf(path, seq):
-    try:
-        import pypdf
-        reader = pypdf.PdfReader(str(path))
-        text = "\n".join((page.extract_text() or "") for page in reader.pages)
-    except Exception:
+def _parse_extracted(path, seq):
+    # .pdf / .docx / .html / .htm: pull plain text via the shared extractor and
+    # run it through the same structural parser as native text files. No temp
+    # file is written (the source name is preserved on each rule).
+    text = text_extract.extract_text(path)
+    if not text.strip():
         return []
-    tmp_path = path.with_suffix(".pdf.parsed.txt")
-    tmp_path.write_text(text, encoding="utf-8")
-    try:
-        return _parse_text(tmp_path, seq)
-    finally:
-        try: tmp_path.unlink()
-        except FileNotFoundError: pass
+    return _parse_text_lines(text, path.name, seq)
 
 
 def _is_markdown_heading(line):

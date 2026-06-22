@@ -1,7 +1,7 @@
-"""Document dating cascade (genesis Part XXV).
+"""Document dating cascade (genesis Part XXIV).
 
 Resolves a publication date for each document via the cascade. Order is
-content-first, container-last, per Part XXV's metadata hierarchy:
+content-first, container-last, per Part XXIV's metadata hierarchy:
 
   1. Filename date pattern (operator-provided signal — authoritative).
   2. First-page numeric year extraction (content-derived — what the document
@@ -19,7 +19,7 @@ Each record carries:
   date_candidates   : list of all years found across all sources, populated
                       only when date_confidence == "uncertain"
 
-Stores results in config/document_dates.json.
+Stores results in durable/learnings/document_dates.json (protected; INFRA-030).
 """
 
 from __future__ import annotations
@@ -29,6 +29,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import text_extract
 
 
 _FILENAME_PATTERNS = [
@@ -143,17 +145,20 @@ def date_from_web(title_hint: str | None, *, search_router=None) -> str | None:
 
 
 def read_first_page(path: Path) -> str:
-    try:
-        import pypdf
-        reader = pypdf.PdfReader(str(path))
-        if not reader.pages:
-            return ""
-        return reader.pages[0].extract_text() or ""
-    except Exception:
+    """First-page text for the content date scan, across the shared format
+    family. PDFs use page 1; every other supported format uses the start of its
+    extracted text (the cascade scans only the first ~3000 chars). Unsupported
+    or unreadable -> '' (the cascade falls back to filename / metadata / web)."""
+    p = Path(path)
+    if not text_extract.is_supported(p):
         return ""
+    if p.suffix.lower() == ".pdf":
+        pages = text_extract.extract_pages(p)
+        return pages[0][1] if pages else ""
+    return text_extract.extract_text(p)
 
 
-# Eastern Arabic / Arabic-Indic numeral translation table. Per Part XXV the
+# Eastern Arabic / Arabic-Indic numeral translation table. Per Part XXIV the
 # implementation must recognize ٠-٩ in addition to 0-9 when scanning a
 # document's first page for its self-stated year.
 _EASTERN_ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
@@ -163,7 +168,7 @@ _YEAR_RANGE = range(1990, 2031)
 
 
 def _year_from_filename(filename: str) -> str | None:
-    """Genesis Part XXV: filename year is the operator-provided signal,
+    """Genesis Part XXIV: filename year is the operator-provided signal,
     authoritative when present. Any 4-digit numeric sequence in the slug
     that falls in the valid range counts."""
     stem = Path(filename).stem
@@ -181,7 +186,7 @@ def _year_from_filename(filename: str) -> str | None:
 
 
 def _years_from_first_page(text: str) -> list[int]:
-    """Genesis Part XXV: years are numeric, not linguistic. Extract every
+    """Genesis Part XXIV: years are numeric, not linguistic. Extract every
     four-digit sequence (Western or Eastern Arabic) in the valid range from
     the first-page text. Returns the candidate list in document order with
     duplicates preserved so the caller can pick the most recent / vote."""
@@ -197,12 +202,12 @@ def _years_from_first_page(text: str) -> list[int]:
 
 
 def resolve_dates(documents: list[Path], *, search_router=None) -> list[dict]:
-    """Run the full cascade for each document path per Part XXV.
+    """Run the full cascade for each document path per Part XXIV.
 
     Returns records with: filename, date, date_source, date_confidence,
     date_candidates (only on uncertain), title.
 
-    Cascade order (Part XXV):
+    Cascade order (Part XXIV):
       1. filename (operator signal — high confidence)
       2. content (first-page numeric year scan — high confidence,
          unless multiple conflicting candidates and no filename year)
@@ -259,7 +264,7 @@ def resolve_dates(documents: list[Path], *, search_router=None) -> list[dict]:
                 confidence = "uncertain"
                 candidates = content_unique
         else:
-            # Source 3: container metadata (low confidence per Part XXV).
+            # Source 3: container metadata (low confidence per Part XXIV).
             if _meta_date:
                 date = _meta_date
                 source = "metadata"
@@ -288,7 +293,8 @@ def resolve_dates(documents: list[Path], *, search_router=None) -> list[dict]:
 
 
 def write_dates(project_root: Path, dated_documents: list[dict]) -> Path:
-    path = project_root / "config" / "document_dates.json"
+    import durable_paths
+    path = durable_paths.document_dates_path(project_root)  # protected durable learning (INFRA-030)
     payload = {"schema_version": "1.0.0", "generated_at": datetime.utcnow().isoformat() + "Z",
                "documents": dated_documents}
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -297,7 +303,8 @@ def write_dates(project_root: Path, dated_documents: list[dict]) -> Path:
 
 
 def read_dates(project_root: Path) -> list[dict]:
-    path = project_root / "config" / "document_dates.json"
+    import durable_paths
+    path = durable_paths.document_dates_path(project_root)
     if not path.exists():
         return []
     try:

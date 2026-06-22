@@ -1,44 +1,44 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "created": "2026-05-26",
-  "description": "Fixed agent identities. DOES is the capability set; DOES_NOT is the boundary set; model is the backend assignment. This registry is the source of truth for LAW-II enforcement. v1.1.0 adds AMENDMENT_DRAFTER per genesis Part XVIII Section D.",
+  "description": "Fixed agent identities. DOES is the capability set; DOES_NOT is the boundary set. `backend` selects the model family (cross-family audit, LAW-III); `model` is the EXACT model id and is the sole source of truth for model selection (no key-layer override, no hardcoded default). v1.1.0 added AMENDMENT_DRAFTER (genesis Part XVIII Section D). v1.2.0 (INFRA-026) sets explicit per-agent model ids by tier and removes the dead model_tier/context_tier fields.",
   "agents": {
     "PROCESSOR": {
       "does": ["Extract content from source documents", "Draft outputs in prose or structured form", "Compile findings from other agents into deliverables"],
       "does_not": ["Verify its own work", "Override other agents", "Correct source data"],
-      "model": "claude", "backend": "claude_api", "category": "content_production",
+      "model": "claude-sonnet-4-6", "backend": "claude_api", "category": "content_production",
       "may_use_web": false, "may_handle_sensitive": false
     },
     "VERIFIER": {
       "does": ["Cross-check outputs against source documents", "Flag divergence between draft and source", "Report findings in structured form"],
       "does_not": ["Fix problems (report only)", "Search the web", "Draft content"],
-      "model": "gpt", "backend": "openai_api", "category": "verification",
+      "model": "gpt-4o", "backend": "openai_api", "category": "verification",
       "may_use_web": false, "may_handle_sensitive": false
     },
     "FACT_CHECKER": {
       "does": ["Extract verifiable claims from drafts", "Search external sources for evidence", "Produce factual verdicts with source citations"],
       "does_not": ["Judge procedures", "Draft content", "Check style", "Correct source"],
-      "model": "gpt", "backend": "openai_api", "category": "verification",
+      "model": "gpt-4o", "backend": "openai_api", "category": "verification",
       "may_use_web": true, "may_handle_sensitive": false
     },
     "PRACTICE_AUDITOR": {
       "does": ["Check procedures against current best practice", "Flag anti-patterns", "Evaluate operational content against the convention registry",
                 "Perform absence detection: compare the operational document against the corpus structural inventory and flag elements present in a majority of context documents but absent here"],
       "does_not": ["Verify raw facts", "Draft content", "Assess legal basis"],
-      "model": "gpt", "backend": "openai_api", "category": "verification",
+      "model": "gpt-4o", "backend": "openai_api", "category": "verification",
       "may_use_web": true, "may_handle_sensitive": false
     },
     "LEGAL_ANALYST": {
       "does": ["Assess legal basis of source claims", "Evaluate precedent", "Analyze regulatory framework",
                 "Perform absence detection on legal mechanisms (redress, conformity, post-market monitoring) using the corpus structural inventory"],
       "does_not": ["Draft correspondence", "Make policy judgments", "Search the web independently"],
-      "model": "claude", "backend": "claude_api", "category": "analysis",
+      "model": "claude-opus-4-8", "backend": "claude_api", "category": "analysis",
       "may_use_web": false, "may_handle_sensitive": false
     },
     "STYLE_GUARDIAN": {
       "does": ["Enforce linguistic register", "Check style consistency", "Evaluate terminology/rephrasing/borrowing conventions"],
       "does_not": ["Change content (style only)", "Draft", "Verify facts"],
-      "model": "claude", "backend": "claude_api", "category": "style",
+      "model": "claude-haiku-4-5", "backend": "claude_api", "category": "style",
       "may_use_web": false, "may_handle_sensitive": false,
       "note": "Per Part XVIII Section C, STYLE_GUARDIAN participates in convention review. When Qwen local is unavailable, falls back to Claude with a tight prompt."
     },
@@ -46,43 +46,43 @@
       "does": ["Index documents", "Establish chronology", "Maintain reference chains",
                 "Produce a structural inventory of the corpus, listing structural elements and the count of documents containing each (indexing across documents, not evaluating their merit)"],
       "does_not": ["Draft", "Analyze (evaluative judgment, not structural indexing)", "Recommend"],
-      "model": "claude", "backend": "claude_api", "category": "organization",
+      "model": "claude-sonnet-4-6", "backend": "claude_api", "category": "organization",
       "may_use_web": false, "may_handle_sensitive": false
     },
     "INST_FINDER": {
       "does": ["Map topics to institutions", "Build institution registries"],
       "does_not": ["Draft correspondence", "Make policy judgments"],
-      "model": "claude", "backend": "claude_api", "category": "organization",
+      "model": "claude-haiku-4-5", "backend": "claude_api", "category": "organization",
       "may_use_web": false, "may_handle_sensitive": false
     },
     "CITATION_RESOLVER": {
       "does": ["Build cross-document reference graphs", "Map citation chains"],
       "does_not": ["Interpret citations (that is PROCESSOR's role)", "Search external"],
-      "model": "claude", "backend": "claude_api", "category": "organization",
+      "model": "claude-sonnet-4-6", "backend": "claude_api", "category": "organization",
       "may_use_web": false, "may_handle_sensitive": false
     },
     "SPEECH_ACT_TAGGER": {
       "does": ["Classify pragmatic intent of utterances", "Build speech act taxonomy"],
       "does_not": ["Make policy judgments from speech acts"],
-      "model": "claude", "backend": "claude_api", "category": "analysis",
+      "model": "claude-haiku-4-5", "backend": "claude_api", "category": "analysis",
       "may_use_web": false, "may_handle_sensitive": false
     },
     "REDACT_CLERK": {
       "does": ["Apply tier 1-2 redaction (pattern-based PII, named entities)"],
       "does_not": ["Add content", "Make judgment calls on borderline cases"],
-      "model": "qwen", "backend": "qwen_local", "category": "privacy",
+      "model": "Qwen/Qwen2.5-7B-Instruct", "backend": "qwen_local", "category": "privacy",
       "tiers": ["T1", "T2"], "may_use_web": false, "may_handle_sensitive": true
     },
     "REDACT_AUTHORITY": {
       "does": ["Review and approve redaction decisions", "Adversarial re-identification testing"],
       "does_not": ["Draft", "Search", "Verify facts"],
-      "model": "qwen", "backend": "qwen_local", "category": "privacy",
+      "model": "Qwen/Qwen2.5-7B-Instruct", "backend": "qwen_local", "category": "privacy",
       "tiers": ["T3", "T4"], "may_use_web": false, "may_handle_sensitive": true
     },
     "REDACT_GATE": {
       "does": ["Final existential gate — binary pass/fail on whether output can be reconstructed to reveal redacted content"],
       "does_not": ["Any function other than binary pass/fail on output safety"],
-      "model": "qwen", "backend": "qwen_local", "category": "privacy",
+      "model": "Qwen/Qwen2.5-7B-Instruct", "backend": "qwen_local", "category": "privacy",
       "tiers": ["T5"], "may_use_web": false, "may_handle_sensitive": true
     },
     "AMENDMENT_DRAFTER": {
@@ -97,8 +97,7 @@
         "Make value judgments beyond what conventions specify",
         "Produce content without a reference citation"
       ],
-      "model": "claude", "backend": "claude_api",
-      "model_tier": "frontier", "context_tier": "full",
+      "model": "claude-opus-4-8", "backend": "claude_api",
       "category": "amendment", "may_use_web": false, "may_handle_sensitive": false
     }
   }

@@ -1,7 +1,8 @@
 """Project Shimmer verification gate.
 
-Runs Part XV checks 1-30 (Sessions 1-3) + Part XVIII checks 31-37 (Session 4+)
-+ an ast.parse smoke check. ALL must PASS.
+Runs 39 checks total: check 00 (ast.parse smoke) + Part XV checks 1-30
+(Sessions 1-3) + Part XVIII Section F checks 31-37 (Session 4+) + check 38
+(embedding store build/query, Part XXI). ALL must PASS.
 """
 
 from __future__ import annotations
@@ -27,11 +28,18 @@ CONFIG = ROOT / "config"
 SELF_PATH = Path(__file__).resolve()
 sys.path.insert(0, str(SCRIPTS))
 
+import durable_paths as _dp  # after sys.path setup; used by non-mutation guards
+
 
 REQUIRED_DIRS = [
     "config", "input", "input/context", "input/operational", "input/conventions",
-    "output", "output/deliverables", "output/audit", "output/logs",
-    "reference", "prompts", "scripts", "scripts/agents", "ontologies",
+    # Per-run output isolation (INFRA-032): per-run artifacts live under
+    # output/runs/<run>/ now, not in fixed output/{deliverables,audit,logs}.
+    "output", "output/runs",
+    "reference", "prompts", "scripts", "snapshots",
+    # Protected durable tree (INFRA-030) — lives outside the auto-cleaned output tree.
+    "durable", "durable/cache", "durable/global", "durable/learnings",
+    "durable/reference", "durable/governance",
 ]
 
 EXPECTED_AGENTS = {
@@ -50,15 +58,58 @@ DOMAIN_TERMS = re.compile(
 )
 
 
+# Per-run isolation (INFRA-032): the gate boots orchestrators and opens buses.
+# To stay strictly non-mutating w.r.t. the repo (Pass B-4 discipline) AND to never
+# collide with a real run's output, the gate runs every orchestrator/bus against a
+# THROWAWAY run folder in the system temp dir (outside the repo). project_root
+# stays ROOT (so durable/config are read from the real repo); only per-run output
+# is redirected here.
+import tempfile as _tempfile
+import run_context as _run_context_mod
+_VERIFY_RUN = _run_context_mod.RunContext(
+    project_root=ROOT, run_id="verify",
+    run_dir=Path(_tempfile.mkdtemp(prefix="shimmer_verify_run_")) / "run",
+).ensure()
+
+
 def _ok(detail="ok"): return ("PASS", detail)
 def _fail(detail): return ("FAIL", detail)
+
+
+def _nonmutating(*paths):
+    """Decorator: snapshot the on-disk bytes (or absence) of the given tracked
+    files before the check runs, and restore them afterward (even on return or
+    exception). This lets a check genuinely exercise spawn/parse/save against the
+    real ROOT while guaranteeing it leaves NO tracked file under config/,
+    reference/, or prompts/ mutated. The verify gate must never modify working
+    files; runtime artifacts belong under output/ (gitignored)."""
+    def deco(fn):
+        def wrapped(*a, **k):
+            snap = {p: (p.read_bytes() if p.exists() else None) for p in paths}
+            try:
+                return fn(*a, **k)
+            finally:
+                for p, data in snap.items():
+                    if data is None:
+                        if p.exists(): p.unlink()
+                    else:
+                        p.parent.mkdir(parents=True, exist_ok=True)
+                        p.write_bytes(data)
+        wrapped.__name__ = fn.__name__
+        wrapped.__doc__ = fn.__doc__
+        return wrapped
+    return deco
 
 
 def check_01_directory():
     missing = [d for d in REQUIRED_DIRS if not (ROOT / d).is_dir()]
     if missing: return _fail(f"missing dirs: {missing}")
+    allowed_root_files = {
+        "genesis.md", "CLAUDE.md", "README.md", "requirements.txt",
+        ".gitignore", "project_shimmer_cover.png", ".env_path",
+    }
     extras = [p.name for p in ROOT.iterdir()
-              if p.is_file() and p.name not in {"genesis.md", "CLAUDE.md", ".env_path"}]
+              if p.is_file() and p.name not in allowed_root_files]
     return ("PASS" if not extras else "WARN",
             f"{len(REQUIRED_DIRS)} dirs present" + (f"; loose: {extras}" if extras else ""))
 
@@ -115,7 +166,7 @@ def check_06_match_tf_law():
 
 def check_07_message_bus():
     from message_bus import MessageBus, ProtocolViolation
-    bus_path = ROOT / "output" / "logs" / "_verify_bus.jsonl"
+    bus_path = _VERIFY_RUN.logs_dir() / "_verify_bus.jsonl"
     if bus_path.exists(): bus_path.unlink()
     bus = MessageBus.open(bus_path)
     msg = {"sender": "ORCHESTRATOR", "sender_role": "orchestrator", "recipient": "PROCESSOR",
@@ -138,7 +189,7 @@ def check_08_bus_reader():
     from bus_reader import BACKEND_BUDGETS, assemble_context
     from constitution import Constitution
     from message_bus import MessageBus
-    bus_path = ROOT / "output" / "logs" / "_verify_bus.jsonl"
+    bus_path = _VERIFY_RUN.logs_dir() / "_verify_bus.jsonl"
     if bus_path.exists(): bus_path.unlink()
     bus = MessageBus.open(bus_path)
     c = Constitution.load(CONFIG / "constitution.json")
@@ -163,9 +214,9 @@ def check_09_agent_wrapper_callers():
 
 def check_10_orchestrator_deliberation():
     from orchestrator import TopOrchestrator
-    bus_path = ROOT / "output" / "logs" / "agent_bus.jsonl"
+    bus_path = _VERIFY_RUN.bus_path()
     if bus_path.exists(): bus_path.unlink()
-    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False)
+    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False, run_context=_VERIFY_RUN)
     wrappers = orch.deliberation_round({"phase": "test", "docs": []})
     if set(wrappers.keys()) != EXPECTED_AGENTS:
         return _fail(f"deliberation wrappers: {set(wrappers) ^ EXPECTED_AGENTS}")
@@ -177,7 +228,7 @@ def check_10_orchestrator_deliberation():
 
 def check_11_orchestrator_evaluate_charter():
     from orchestrator import TopOrchestrator
-    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False)
+    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False, run_context=_VERIFY_RUN)
     decision, match, details = orch.evaluate_charter({
         "id": "TF-test-1", "mission": "verify outputs against source documents",
         "members": [{"agent": "VERIFIER"}, {"agent": "PROCESSOR"}], "proposed_by": "VERIFIER",
@@ -191,7 +242,8 @@ def check_12_orchestrator_escalation():
     captured = []
     def handler(topic, payload):
         captured.append((topic, payload)); return OperatorDecision(decision="DEFER", rationale="harness")
-    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False, operator_handler=handler)
+    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False, operator_handler=handler,
+                                run_context=_VERIFY_RUN)
     decision, _m, _d = orch.evaluate_charter({
         "id": "TF-test-2", "mission": "totally novel mission with no overlap whatsoever",
         "members": [{"agent": "ARCHIVIST"}, {"agent": "SPEECH_ACT_TAGGER"}], "proposed_by": "ARCHIVIST",
@@ -204,12 +256,14 @@ def check_12_orchestrator_escalation():
     return _ok(f"escalation mechanism fired; topic captured; orchestrator returned {decision}")
 
 
+@_nonmutating(CONFIG / "constitution.json")
 def check_13_tf_formation_endtoend():
     from orchestrator import OperatorDecision, TopOrchestrator
-    bus_path = ROOT / "output" / "logs" / "agent_bus.jsonl"
+    bus_path = _VERIFY_RUN.bus_path()
     if bus_path.exists(): bus_path.unlink()
     orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False,
-                                 operator_handler=lambda t, p: OperatorDecision("APPROVE", "verification"))
+                                 operator_handler=lambda t, p: OperatorDecision("APPROVE", "verification"),
+                                 run_context=_VERIFY_RUN)
     before = len(orch.constitution.task_force_laws())
     charter = {"mission": "verify outputs against source documents",
                "members": [{"agent": "VERIFIER", "role_in_tf": "lead"},
@@ -230,6 +284,7 @@ def check_13_tf_formation_endtoend():
     return _ok(f"propose->form->dissolve->codify works (TF={tf.id}, law={law.get('id')})")
 
 
+@_nonmutating(CONFIG / "constitution.json")
 def check_14_tf_dissolution():
     from constitution import Constitution
     c = Constitution.load(CONFIG / "constitution.json")
@@ -242,15 +297,19 @@ def check_14_tf_dissolution():
     return _ok(f"add_tf_law works (id={law.get('id')})")
 
 
+@_nonmutating(_dp.search_strategy_learnings_path(ROOT),
+              _dp.discovered_apis_path(ROOT),
+              _dp.institution_registry_path(ROOT))
 def check_15_search():
     """Live DDG smoke test. Cached for 24h to keep repeat runs fast.
 
-    Cache lives at output/audit/verify_check15_cache.json. First run of the
+    Cache lives in the gate's throwaway temp run (audit/verify_check15_cache.json,
+    outside the repo). First run of the
     day hits DDG live; subsequent runs within 24h return the cached verdict.
     """
     from search_router import SearchRouter
 
-    cache_path = ROOT / "output" / "audit" / "verify_check15_cache.json"
+    cache_path = _VERIFY_RUN.audit_dir() / "verify_check15_cache.json"
     if cache_path.exists():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -306,21 +365,22 @@ def check_16_claim_classifier():
     return _ok(f"{len(claims)} claims, types={sorted(types)}")
 
 
+@_nonmutating(_dp.verification_cache_path(ROOT), _dp.verification_cache_global_path(ROOT))
 def check_17_memory():
-    from memory import TTL_DAYS, VerificationMemory
-    mem = VerificationMemory.open(ROOT); mem.reset_tier1()
+    from verification_cache import TTL_DAYS, VerificationCache
+    mem = VerificationCache.open(ROOT)
     mem.store("verify_test_key", claim_type="statistic", verdict="CONFIRMED",
               evidence="unit test", source_url="https://example.com", confidence=0.95)
     hit = mem.lookup("verify_test_key", "statistic")
     if hit is None: return _fail("lookup miss")
-    if hit.tier != 1: return _fail(f"tier {hit.tier}")
+    if hit.tier != 2: return _fail(f"tier {hit.tier}")
     if hit.ttl_days != TTL_DAYS["statistic"]: return _fail(f"ttl {hit.ttl_days}")
     if mem.lookup("nonexistent_key_xyz", "statistic") is not None: return _fail("false hit")
-    for ap in ("tier1_path", "tier2_path", "tier3_path"):
+    for ap in ("tier2_path", "tier3_path"):
         path = getattr(mem, ap); data = mem._load(path)
         if "verify_test_key" in (data.get("entries") or {}):
             del data["entries"]["verify_test_key"]; mem._save(path, data)
-    return _ok(f"three-tier ok; ttl statistic={TTL_DAYS['statistic']}, institutional={TTL_DAYS['institutional']}")
+    return _ok(f"two durable tiers ok; ttl statistic={TTL_DAYS['statistic']}, institutional={TTL_DAYS['institutional']}")
 
 
 def check_18_contract_validation():
@@ -328,13 +388,14 @@ def check_18_contract_validation():
     from constitution import Constitution
     from message_bus import MessageBus
     c = Constitution.load(CONFIG / "constitution.json")
-    bus_path = ROOT / "output" / "logs" / "_verify_bus.jsonl"
+    bus_path = _VERIFY_RUN.logs_dir() / "_verify_bus.jsonl"
     if bus_path.exists(): bus_path.unlink()
     bus = MessageBus.open(bus_path)
     registry = json.loads((CONFIG / "agent_registry.json").read_text())["agents"]
     contracts = json.loads((CONFIG / "agent_contracts.json").read_text())["contracts"]
     w = AgentWrapper(name="FACT_CHECKER", constitution=c, bus=bus, registry=registry,
-                     contracts=contracts, keys={"OPENAI_API_KEY": "stub"})
+                     contracts=contracts, keys={"OPENAI_API_KEY": "stub"},
+                     run_context=_VERIFY_RUN)
     sample = json.dumps({
         "claim_id": "C-1", "original_text": "test", "verdict": "CONFIRMED",
         "evidence": "test source", "source_url": "https://example.com",
@@ -348,7 +409,7 @@ def check_18_contract_validation():
 
 
 def check_19_bus_constitution_field():
-    bus_path = ROOT / "output" / "logs" / "agent_bus.jsonl"
+    bus_path = _VERIFY_RUN.bus_path()
     if not bus_path.exists(): return _fail("no bus log")
     lines = [json.loads(ln) for ln in bus_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     missing = [i for i, m in enumerate(lines) if "constitution_check" not in m]
@@ -358,12 +419,12 @@ def check_19_bus_constitution_field():
 
 def check_20_run_summary():
     from orchestrator import TopOrchestrator
-    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False)
+    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False, run_context=_VERIFY_RUN)
     summary = orch.run_summary()
     needed = {"total", "by_type", "by_sender", "by_channel", "constitution", "input_documents"}
     missing = needed - set(summary)
     if missing: return _fail(f"missing keys: {missing}")
-    summaries = sorted((ROOT / "output" / "logs").glob("run_summary_*.md"))
+    summaries = sorted(_VERIFY_RUN.logs_dir().glob("run_summary_*.md"))
     if not summaries: return _fail("no summary .md")
     return _ok(f"summary ok; latest={summaries[-1].name}; docs={summary['input_documents']}")
 
@@ -401,8 +462,16 @@ def check_22_no_domain_terms():
 
 def check_23_keys_not_hardcoded():
     keylike = re.compile(r"sk-(ant-|proj-|[A-Za-z0-9]{20,})")
+    # The secret-scanner (guard_secrets.py) and this gate necessarily carry the
+    # detection pattern literals themselves (e.g. "sk-ant-"). Skip them the same
+    # way check_22 skips SELF_PATH, so the gate does not match its own / the
+    # scanner's pattern strings. Real detection is unaffected: every other file
+    # under scripts/ and config/ is still scanned.
+    def _is_pattern_owner(path):
+        return path.resolve() == SELF_PATH or path.name == "guard_secrets.py"
     bad = []
     for p in SCRIPTS.rglob("*.py"):
+        if _is_pattern_owner(p): continue
         if keylike.search(p.read_text(encoding="utf-8")):
             bad.append(str(p.relative_to(ROOT)))
     for p in CONFIG.rglob("*"):
@@ -412,7 +481,7 @@ def check_23_keys_not_hardcoded():
                     bad.append(str(p.relative_to(ROOT)))
             except (OSError, UnicodeError): pass
     if bad: return _fail(f"key-like in: {bad}")
-    return _ok("no hardcoded API keys")
+    return _ok("no hardcoded API keys (exempt: guard_secrets.py scanner + verify gate)")
 
 
 def check_24_qwen_minimal_context():
@@ -420,7 +489,7 @@ def check_24_qwen_minimal_context():
     from constitution import Constitution
     from message_bus import MessageBus
     c = Constitution.load(CONFIG / "constitution.json")
-    bus_path = ROOT / "output" / "logs" / "_verify_bus.jsonl"
+    bus_path = _VERIFY_RUN.logs_dir() / "_verify_bus.jsonl"
     if bus_path.exists(): bus_path.unlink()
     bus = MessageBus.open(bus_path)
     pkg = assemble_context(backend="qwen_local", constitution=c, bus=bus, work_payload="x")
@@ -439,9 +508,9 @@ def check_24_qwen_minimal_context():
 def check_25_async():
     import time
     from orchestrator import TopOrchestrator
-    bus_path = ROOT / "output" / "logs" / "agent_bus.jsonl"
+    bus_path = _VERIFY_RUN.bus_path()
     if bus_path.exists(): bus_path.unlink()
-    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False)
+    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False, run_context=_VERIFY_RUN)
     def task(label, delay):
         def inner():
             time.sleep(delay); return label
@@ -460,9 +529,9 @@ def check_26_block_interrupt():
     import threading
     import time
     from orchestrator import TopOrchestrator
-    bus_path = ROOT / "output" / "logs" / "agent_bus.jsonl"
+    bus_path = _VERIFY_RUN.bus_path()
     if bus_path.exists(): bus_path.unlink()
-    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False)
+    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False, run_context=_VERIFY_RUN)
     handle = orch.raise_block(raised_by="VERIFIER", channel="main", reason="harness interrupt")
     if not orch.block_gate.is_blocked("main"): return _fail("not blocked")
     release_at = time.monotonic() + 0.3
@@ -482,22 +551,34 @@ def check_26_block_interrupt():
     return _ok(f"BLOCK gated ({elapsed:.2f}s), release={handle.release_reason!r}")
 
 
+import durable_paths as _dp
+
+
+@_nonmutating(
+    _dp.linguistic_identity_path(ROOT),
+    _dp.institution_registry_path(ROOT),
+    _dp.speech_acts_taxonomy_path(ROOT),
+    _dp.citation_convention_path(ROOT),
+    _dp.situational_awareness_path(ROOT),
+    ROOT / "prompts" / "project_rules.md",
+)
 def check_27_adaptive_spawn():
     """For Part XVIII Section F: adaptive_spawn reads from input/context/. We
     require LINGUISTIC_IDENTITY only when input/context/ has documents; in
     a structural verification pass we just confirm the helper is callable
-    and produces a report (empty corpus -> empty actions is acceptable)."""
+    and produces a report (empty corpus -> empty actions is acceptable).
+    Spawned assets now live in the protected durable/ tree (INFRA-030)."""
     from adaptive_spawn import spawn_all
     for p in [
-        ROOT / "reference" / "LINGUISTIC_IDENTITY.md",
-        ROOT / "config" / "institution_registry.json",
-        ROOT / "config" / "speech_acts_taxonomy.json",
-        ROOT / "config" / "citation_convention.json",
-        ROOT / "reference" / "situational_awareness.md",
+        _dp.linguistic_identity_path(ROOT),
+        _dp.institution_registry_path(ROOT),
+        _dp.speech_acts_taxonomy_path(ROOT),
+        _dp.citation_convention_path(ROOT),
+        _dp.situational_awareness_path(ROOT),
     ]:
         if p.exists(): p.unlink()
     report = spawn_all(ROOT, overwrite=False)
-    li_path = ROOT / "reference" / "LINGUISTIC_IDENTITY.md"
+    li_path = _dp.linguistic_identity_path(ROOT)
     if not li_path.exists():
         return _fail("LINGUISTIC_IDENTITY.md not created")
     second = spawn_all(ROOT, overwrite=False)
@@ -522,9 +603,9 @@ def check_29_claude_md():
 
 def check_30_pipeline_smoke():
     from orchestrator import TopOrchestrator
-    bus_path = ROOT / "output" / "logs" / "agent_bus.jsonl"
+    bus_path = _VERIFY_RUN.bus_path()
     if bus_path.exists(): bus_path.unlink()
-    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False)
+    orch = TopOrchestrator.boot(interactive=False, run_adaptive_spawn=False, run_context=_VERIFY_RUN)
     docs = orch.list_input_documents()
     payload = {"document_names": [d.name for d in docs], "document_count": len(docs),
                "phase": "situation_assessment"}
@@ -544,6 +625,7 @@ def check_31_three_input_subdirs():
     return _ok("input/{context,operational,conventions}/ present")
 
 
+@_nonmutating(CONFIG / "convention_registry.json")
 def check_32_convention_parser():
     """Part XVIII Section F: convention_parser produces valid convention_registry.json."""
     from convention_parser import parse_conventions, write_registry
@@ -578,9 +660,9 @@ def check_32_convention_parser():
 
 def check_33_reference_builder():
     from reference_builder import ReferenceIndex
-    idx_path = ROOT / "output" / "audit" / "reference_index.json"
+    idx_path = _VERIFY_RUN.reference_index_path()
     if idx_path.exists(): idx_path.unlink()
-    idx = ReferenceIndex.open(ROOT)
+    idx = ReferenceIndex.open(ROOT, index_path=idx_path)
     sample_text = (
         "Article 1. This is the first paragraph of a sample document.\n\n"
         "Article 2. This is the second paragraph, which contains a verifiable claim.\n\n"
@@ -594,10 +676,10 @@ def check_33_reference_builder():
         return _fail(f"expected 3 paragraphs, got {len(entries)}")
     idx.cite(entries[0].ref_id, "VERIFIER")
     idx.save()
-    re_idx = ReferenceIndex.open(ROOT)
+    re_idx = ReferenceIndex.open(ROOT, index_path=idx_path)
     if re_idx.by_id[entries[0].ref_id].cited_by != ["VERIFIER"]:
         return _fail("cited_by lost on reload")
-    idx_path.unlink()
+    idx_path.unlink(missing_ok=True)
     return _ok(f"reference index 3 entries with stable REF-* ids; reload preserved cited_by")
 
 
@@ -736,7 +818,11 @@ def check_38_embedding_store():
         if n == 0:
             return ("WARN", "build_store returned 0 (graceful degradation path)")
         store = embedding_store.load_store(store_path)
-        if store is None or not store.get("passages"):
+        # Schema 2: passages live in per-model sub-stores, not a top-level list.
+        n_passages = (sum(len(b.get("passages") or [])
+                          for b in (store.get("models") or {}).values())
+                      if store else 0)
+        if store is None or n_passages == 0:
             return _fail("store loaded empty")
         hits = embedding_store.query_store(store, "human oversight of algorithmic systems", n=2)
         if not hits or "similarity" not in hits[0]:

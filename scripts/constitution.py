@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from constitution_guard import check_constitution_change, GuardError
+
 
 LAYER_ORDER = ("seed_laws", "task_force_laws", "precedents", "amendments")
 
@@ -44,6 +46,15 @@ class Constitution:
     path: Path
     _data: dict[str, Any] = field(default_factory=dict)
     _lock: threading.RLock = field(default_factory=threading.RLock)
+    # Operator-escalation hook for the amendment tripwire (INFRA-029). Default
+    # None means: any protected modify/delete of an existing amendment/seed law
+    # is REFUSED (the safe default — no self-approval, agents cannot bypass).
+    _operator_handler: Any = None
+    _interactive: bool = False
+
+    def set_operator(self, operator_handler, *, interactive: bool = False) -> None:
+        self._operator_handler = operator_handler
+        self._interactive = interactive
 
     @classmethod
     def load(cls, path: str | Path) -> "Constitution":
@@ -58,6 +69,21 @@ class Constitution:
 
     def save(self) -> None:
         with self._lock:
+            # Amendment tripwire (INFRA-029): a write that would modify or delete
+            # an existing amendment or seed law is blocked unless an operator
+            # explicitly approves. Appending a new amendment passes silently.
+            verdict = check_constitution_change(
+                self.path, self._data,
+                operator_handler=self._operator_handler,
+                interactive=self._interactive,
+                reason="Constitution.save",
+            )
+            if not verdict["allowed"]:
+                raise GuardError(
+                    "Blocked: this save would modify/delete a protected "
+                    f"constitutional entry without operator approval: "
+                    f"{verdict['violations']}"
+                )
             tmp = self.path.with_suffix(self.path.suffix + ".tmp")
             with tmp.open("w", encoding="utf-8") as fh:
                 json.dump(self._data, fh, indent=2, ensure_ascii=False)

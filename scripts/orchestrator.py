@@ -68,21 +68,28 @@ class TopOrchestrator:
     task_forces: dict = field(default_factory=dict)
     block_gate: BlockGate = field(default_factory=BlockGate)
     cost_tracker: CostTracker | None = None
+    run_context: Any = None
     _tf_seq: int = 0
 
     @classmethod
     def boot(cls, root=None, *, interactive=True, operator_handler=None,
-             cost_tracker=None, run_adaptive_spawn=True):
+             cost_tracker=None, run_adaptive_spawn=True, run_context=None):
         root = root or project_root()
+        # Per-run output isolation (Part XXVII §A): every run writes into its own
+        # output/runs/<ts>__<id>/ folder. If the caller did not supply one, create
+        # a fresh run here so the bus + all per-run artifacts are run-scoped.
+        if run_context is None:
+            import run_context as _rc
+            run_context = _rc.create_run(root)
         constitution = Constitution.load(root / "config" / "constitution.json")
-        bus = MessageBus.open(root / "output" / "logs" / "agent_bus.jsonl")
+        bus = MessageBus.open(run_context.bus_path())
         with (root / "config" / "agent_registry.json").open("r", encoding="utf-8") as fh:
             registry = json.load(fh).get("agents", {})
         with (root / "config" / "agent_contracts.json").open("r", encoding="utf-8") as fh:
             contracts = json.load(fh).get("contracts", {})
         orch = cls(root=root, constitution=constitution, bus=bus, registry=registry,
                    contracts=contracts, interactive=interactive, operator_handler=operator_handler,
-                   cost_tracker=cost_tracker)
+                   cost_tracker=cost_tracker, run_context=run_context)
         orch._post_orchestrator(
             recipient="BROADCAST", channel="main", msg_type="INFORM",
             body={"event": "BOOT", "constitution_layers": {
@@ -130,7 +137,8 @@ class TopOrchestrator:
         for name in self.registry:
             wrapper = AgentWrapper(name=name, constitution=self.constitution, bus=self.bus,
                                    registry=self.registry, contracts=self.contracts,
-                                   keys=keys, cost_tracker=self.cost_tracker)
+                                   keys=keys, cost_tracker=self.cost_tracker,
+                                   run_context=self.run_context)
             wrappers[name] = wrapper
             situation = {"agent": name, "action": "self_assess",
                          "tags": ["situation_assessment", wrapper.spec.get("category", "")]}
@@ -386,9 +394,9 @@ class TopOrchestrator:
         ]
         summary["blocks"] = [b.as_dict() for b in self.block_gate.blocks.values()]
         mem = self._collect_memory_stats()
-        if mem is not None: summary["memory"] = mem
-        out_path = (self.root / "output" / "logs"
-                    / f"run_summary_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.md")
+        if mem is not None: summary["verification_cache"] = mem
+        out_path = self.run_context.run_summary_path()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(_format_summary_md(summary), encoding="utf-8")
         self._post_orchestrator(recipient="OPERATOR", channel="main", msg_type="INFORM",
                                 body={"event": "RUN_SUMMARY", "path": str(out_path),
@@ -399,8 +407,8 @@ class TopOrchestrator:
 
     def _collect_memory_stats(self):
         try:
-            from memory import VerificationMemory
-            return VerificationMemory.open(self.root).stats()
+            from verification_cache import VerificationCache
+            return VerificationCache.open(self.root).stats()
         except Exception:
             return None
 
@@ -416,9 +424,11 @@ class TopOrchestrator:
 
 
 def _is_first_run(root):
-    sentinels = [root / "reference" / "LINGUISTIC_IDENTITY.md",
-                 root / "config" / "institution_registry.json",
-                 root / "config" / "speech_acts_taxonomy.json"]
+    import durable_paths
+    # Spawned-asset sentinels now live in the protected durable/ tree (INFRA-030).
+    sentinels = [durable_paths.linguistic_identity_path(root),
+                 durable_paths.institution_registry_path(root),
+                 durable_paths.speech_acts_taxonomy_path(root)]
     return any(not p.exists() for p in sentinels)
 
 
@@ -472,10 +482,9 @@ def _format_summary_md(s):
             status = "released" if b.get("released") else "active"
             lines.append(f"- {b['id']} [{status}] raised_by={b['raised_by']} channel={b['channel']} "
                          f"agent={b.get('agent')} reason={b['reason']!r}")
-    if "memory" in s:
-        lines.append("\n## Verification memory")
-        m = s["memory"]
-        lines.append(f"- tier 1 entries: {m.get('tier1', 0)}")
+    if "verification_cache" in s:
+        lines.append("\n## Verification cache")
+        m = s["verification_cache"]
         lines.append(f"- tier 2 entries: {m.get('tier2', 0)}")
         lines.append(f"- tier 3 entries: {m.get('tier3', 0)}")
     lines.append("\n## Messages by type")

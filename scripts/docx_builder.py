@@ -30,6 +30,49 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
+import language_detect
+
+
+# ---------- direction-aware output (language-agnostic; decided from content) ---
+
+def _apply_para_direction(paragraph_or_pe, text: str) -> None:
+    """Set right-to-left base direction on a paragraph when its text is RTL.
+    Adds <w:bidi/> and right justification to the paragraph properties. LTR text
+    is left untouched (Word default). Direction is decided from the content's own
+    script — no hardcoded language assumption."""
+    if language_detect.text_direction(text) != "rtl":
+        return
+    pe = getattr(paragraph_or_pe, "_p", paragraph_or_pe)
+    pPr = pe.get_or_add_pPr()
+    if pPr.find(qn("w:bidi")) is None:
+        pPr.append(OxmlElement("w:bidi"))
+    jc = pPr.find(qn("w:jc"))
+    if jc is None:
+        jc = OxmlElement("w:jc")
+        pPr.append(jc)
+    jc.set(qn("w:val"), "right")
+
+
+def _apply_run_direction(r, text: str) -> None:
+    """Mark a run (w:r element) RTL when its own text is RTL, and tag its bidi
+    language from the dominant RTL script. Per-run granularity handles mixed
+    content (e.g. an LTR case name quoted inside an RTL paragraph): the RTL runs
+    get <w:rtl/>, the LTR runs do not, and Word lays them out correctly within a
+    bidi paragraph."""
+    if language_detect.text_direction(text) != "rtl":
+        return
+    rPr = r.find(qn("w:rPr"))
+    if rPr is None:
+        rPr = OxmlElement("w:rPr")
+        r.insert(0, rPr)  # rPr must be the first child of w:r
+    tag = language_detect.rtl_script_tag(text)
+    if tag and rPr.find(qn("w:lang")) is None:
+        lang = OxmlElement("w:lang")
+        lang.set(qn("w:bidi"), "ar-SA" if tag == "ar" else "he-IL")
+        rPr.append(lang)
+    if rPr.find(qn("w:rtl")) is None:
+        rPr.append(OxmlElement("w:rtl"))
+
 
 _AUTHOR = "Shimmer / AMENDMENT_DRAFTER"
 _INITIALS = "AD"
@@ -119,6 +162,8 @@ class AmendmentDocxBuilder:
         run.bold = True
         run.font.size = Pt(16)
         run.font.name = "Times New Roman"
+        _apply_para_direction(p, self.title)
+        _apply_run_direction(run._r, self.title)
 
     def _add_header(self, text: str) -> None:
         p = self.doc.add_paragraph()
@@ -126,6 +171,8 @@ class AmendmentDocxBuilder:
         run.bold = True
         run.font.size = Pt(13)
         run.font.name = "Times New Roman"
+        _apply_para_direction(p, text)
+        _apply_run_direction(run._r, text)
 
     # ---------- comments part --------------------------------------------------------------
 
@@ -184,6 +231,7 @@ class AmendmentDocxBuilder:
         t.set(qn("xml:space"), "preserve")
         t.text = text
         r.append(t)
+        _apply_run_direction(r, text)
         return r
 
     def _make_ins_run(self, text: str) -> "OxmlElement":
@@ -197,6 +245,7 @@ class AmendmentDocxBuilder:
         t.set(qn("xml:space"), "preserve")
         t.text = text
         r.append(t)
+        _apply_run_direction(r, text)
         ins.append(r)
         return ins
 
@@ -211,6 +260,7 @@ class AmendmentDocxBuilder:
         t.set(qn("xml:space"), "preserve")
         t.text = text
         r.append(t)
+        _apply_run_direction(r, text)
         d.append(r)
         return d
 
@@ -243,6 +293,9 @@ class AmendmentDocxBuilder:
 
         p = self.doc.add_paragraph()
         pe = p._p  # the w:p element
+        # Base paragraph direction from the full paragraph text; individual runs
+        # set their own direction (mixed LTR/RTL content is handled per run).
+        _apply_para_direction(pe, paragraph_text)
 
         # Split paragraph_text around the original to anchor the revision marks
         if original and original in paragraph_text:
@@ -278,7 +331,7 @@ class AmendmentDocxBuilder:
         finding_type = amendment.get("finding_type", "—")
         body = (amendment.get("comment") or "").strip()
         context_refs = amendment.get("context_refs") or []
-        # Genesis Part XXVI: uncertain margin comments are explicitly
+        # Genesis Part XXV: uncertain margin comments are explicitly
         # tagged so a reviewer skimming the docx never confuses them
         # with confident findings.
         is_uncertain = bool(amendment.get("uncertain"))
@@ -316,6 +369,7 @@ class AmendmentDocxBuilder:
                 self._paragraph_with_amendment(para_text, attached)
             else:
                 p = self.doc.add_paragraph()
+                _apply_para_direction(p, para_text)
                 if para_text:
                     p._p.append(self._make_run(para_text))
         # Any amendments that didn't anchor in the body get appended as standalone paragraphs.

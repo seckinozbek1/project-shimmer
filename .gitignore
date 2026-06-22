@@ -12,8 +12,15 @@ input/operational/*.pdf
 input/conventions/*
 output/*
 output/**/*
-ontologies/*
-ontologies/**/*
+# Per-run output isolation (Part XXVII §A / INFRA-032): every run writes into its
+# own output/runs/<UTC-timestamp>__<run-id>/ folder. All run contents are
+# disposable and ignored; only the placeholders are tracked so output/ and
+# output/runs/ exist on a fresh clone (.gitkeep re-included by the rule below).
+!output/.gitkeep
+!output/runs/
+!output/runs/.gitkeep
+snapshots/*
+snapshots/**/*
 presentations/*
 !presentations/README.md
 *.pkl
@@ -22,12 +29,24 @@ __pycache__/
 *.tar
 *.zip
 *.log
+# Stray temp files from interrupted atomic writes (tmp + replace) used by the
+# constitution engine, cost tracker, verification cache, and reference builder.
+# An interrupted write must never surface as a tracked artifact.
+*.tmp
 node_modules/
 
-# Runtime state (regenerated on every run; leaks local paths)
-config/document_dates.json
-config/institution_registry.json
-config/search_strategy_learnings.json
+# Durable protected tree (INFRA-030). The folders + .gitkeep placeholders are
+# tracked (so they exist on a fresh clone), and the small committed domain-seed
+# assets stay tracked, but RUNTIME-GENERATED durable contents are ignored
+# (large caches + per-deployment learnings + governance ledgers stay local):
+durable/cache/embedding_store.pkl
+durable/learnings/institution_registry.json
+durable/learnings/search_strategy_learnings.json
+durable/learnings/discovered_apis.json
+durable/learnings/document_dates.json
+durable/governance/model_approvals.json
+durable/governance/constitution_guard_log.jsonl
+durable/governance/redaction_waivers.jsonl
 
 # Re-includes (must come after the rules they negate)
 !scripts/guard_secrets.py

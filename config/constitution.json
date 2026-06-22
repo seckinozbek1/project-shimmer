@@ -52,7 +52,7 @@
       "check_order": [
         "constitution",
         "precedents",
-        "verification_memory",
+        "verification_cache",
         "run_objectives"
       ]
     },
@@ -66,5 +66,302 @@
   ],
   "task_force_laws": [],
   "precedents": [],
-  "amendments": []
+  "amendments": [
+    {
+      "id": "INFRA-017",
+      "title": "directory hygiene",
+      "created": "unknown",
+      "pre_convention": true,
+      "operator_approved": true,
+      "note": "Pre-convention DELTA. Recorded from the README roster name only; date, reason, and change details were not captured because this predates the DELTA-recording convention (established with INFRA-026). Not reconstructed, to avoid inventing history."
+    },
+    {
+      "id": "INFRA-018",
+      "title": "agent hygiene",
+      "created": "unknown",
+      "pre_convention": true,
+      "operator_approved": true,
+      "note": "Pre-convention DELTA. Recorded from the README roster name only; date, reason, and change details were not captured because this predates the DELTA-recording convention (established with INFRA-026). Not reconstructed, to avoid inventing history."
+    },
+    {
+      "id": "INFRA-019",
+      "title": "variable hygiene",
+      "created": "unknown",
+      "pre_convention": true,
+      "operator_approved": true,
+      "note": "Pre-convention DELTA. Recorded from the README roster name only; date, reason, and change details were not captured because this predates the DELTA-recording convention (established with INFRA-026). Not reconstructed, to avoid inventing history."
+    },
+    {
+      "id": "INFRA-020",
+      "title": "domain-term purge",
+      "created": "unknown",
+      "pre_convention": true,
+      "operator_approved": true,
+      "note": "Pre-convention DELTA. Recorded from the README roster name only; date, reason, and change details were not captured because this predates the DELTA-recording convention (established with INFRA-026). Not reconstructed, to avoid inventing history."
+    },
+    {
+      "id": "INFRA-021",
+      "title": "adaptive spawning",
+      "created": "unknown",
+      "pre_convention": true,
+      "operator_approved": true,
+      "note": "Pre-convention DELTA. Recorded from the README roster name only; date, reason, and change details were not captured because this predates the DELTA-recording convention (established with INFRA-026). Not reconstructed, to avoid inventing history."
+    },
+    {
+      "id": "INFRA-022",
+      "title": "Shimmer UI",
+      "created": "unknown",
+      "pre_convention": true,
+      "operator_approved": true,
+      "note": "Pre-convention DELTA. Recorded from the README roster name only; date, reason, and change details were not captured because this predates the DELTA-recording convention (established with INFRA-026). Not reconstructed, to avoid inventing history."
+    },
+    {
+      "id": "INFRA-023",
+      "title": "non-sibling topology",
+      "created": "unknown",
+      "pre_convention": true,
+      "operator_approved": true,
+      "note": "Pre-convention DELTA. Recorded from the README roster name only; date, reason, and change details were not captured because this predates the DELTA-recording convention (established with INFRA-026). Not reconstructed, to avoid inventing history."
+    },
+    {
+      "id": "INFRA-024",
+      "title": "English module-name rules",
+      "created": "unknown",
+      "pre_convention": true,
+      "operator_approved": true,
+      "note": "Pre-convention DELTA. Recorded from the README roster name only; date, reason, and change details were not captured because this predates the DELTA-recording convention (established with INFRA-026). Not reconstructed, to avoid inventing history."
+    },
+    {
+      "id": "INFRA-025",
+      "created": "2026-06-21",
+      "kind": "naming_consistency",
+      "title": "Verification cache subsystem rename",
+      "genesis_part": "IX",
+      "operator_approved": true,
+      "change": {
+        "law": "LAW-V",
+        "field": "check_order",
+        "token_from": "verification_memory",
+        "token_to": "verification_cache"
+      },
+      "reason": "Naming consistency with the renamed verification cache subsystem (module memory.py -> verification_cache.py, class VerificationMemory -> VerificationCache, data files verification_memory.json -> verification_cache.json and global_verification_memory.json -> verification_cache_global.json and search_cache.json -> search_cache_session.json). Frees the term 'ontology' for the future knowledge-graph subsystem (snapshot manager renamed ontology_manager.py -> snapshot_manager.py, functions *_ontology -> *_snapshot, folder ontologies/ -> snapshots/, manifest _ontology.json -> _snapshot.json). The LAW-V check_order token is applied identically in both constitution copies (config/constitution.json and the _GENESIS_CONSTITUTION template in scripts/snapshot_manager.py).",
+      "note": "LAW-V immutable text is unchanged; only the machine-readable check_order token is renamed. This token is declarative metadata and is not consumed programmatically."
+    },
+    {
+      "id": "INFRA-026",
+      "created": "2026-06-21",
+      "kind": "model_selection",
+      "title": "Per-agent model selection from the registry",
+      "genesis_part": "VII",
+      "operator_approved": true,
+      "change": {
+        "per_agent_model_source": "config/agent_registry.json (spec.model) is the sole source of each agent's exact model id; backend still selects the family (LAW-III cross-family audit preserved)",
+        "removed_fields": [
+          "model_tier",
+          "context_tier"
+        ],
+        "key_reader_isolation": "load_api_keys reads API-key values only; any model variable in the external key file (e.g. a model = ... line in config.py located via .env_path) is ignored and can never influence model selection",
+        "deprecated_model_gate": "at run start, each assigned model is resolved against the provider's live model list; a retired model STOPS the run unless the operator approves a replacement (never auto-swapped); approvals recorded to output/audit/model_approvals.json"
+      },
+      "reason": "Make per-agent model selection real and registry-driven. Previously agent_wrapper chose the model by backend with a hardcoded default and a key-layer MODEL override, and model_tier/context_tier were dead config. Now each agent's exact model id lives in agent_registry.json, the key reader is isolated from model selection, and a live deprecated-model gate enforces current models with operator approval.",
+      "note": "Backends/families unchanged (LAW-III preserved). Tiers: LEGAL_ANALYST and AMENDMENT_DRAFTER on Opus; PROCESSOR/ARCHIVIST/CITATION_RESOLVER on Sonnet; SPEECH_ACT_TAGGER/INST_FINDER/STYLE_GUARDIAN on Haiku; VERIFIER/FACT_CHECKER/PRACTICE_AUDITOR on GPT; REDACT_* on local Qwen."
+    },
+    {
+      "id": "INFRA-027",
+      "created": "2026-06-21",
+      "kind": "input_formats",
+      "title": "Broad shared input-format family",
+      "genesis_part": "XVIII",
+      "operator_approved": true,
+      "change": {
+        "shared_extractor": "scripts/text_extract.py is the single text-extraction utility used by every document reader",
+        "format_family": [
+          ".pdf",
+          ".docx",
+          ".html",
+          ".htm",
+          ".txt",
+          ".md",
+          ".rst",
+          ".log",
+          ".json"
+        ],
+        "rewired_readers": [
+          "pipeline._load_corpus",
+          "pipeline._populate_operational",
+          "embedding_store.build_store",
+          "convention_parser.parse_conventions",
+          "document_dating.read_first_page",
+          "adaptive_spawn._load_corpus"
+        ],
+        "embedding_store": "now embeds every accepted format, not just PDF (fixes silent skip of non-PDF context)",
+        "unsupported_handling": "logged warning + skip, never a silent drop",
+        "dependencies_added": [
+          "beautifulsoup4"
+        ]
+      },
+      "reason": "Make document input a broad, consistent format family with full support. Previously each reader accepted a different, narrower set (embedding store PDF-only; corpus loader pdf/txt/md/rst/log; convention parser json/txt/md/rst/pdf; date cascade PDF-only), silently skipping the rest. A single shared extractor now gives every reader the same family.",
+      "note": "Heavy libraries (pypdf, python-docx, beautifulsoup4) are imported lazily; a missing one degrades to a warning for that format rather than a crash. The Part XIX corpus-acquisition validator stays PDF-specific by design (it guards web-downloaded files, not operator-supplied inputs)."
+    },
+    {
+      "id": "INFRA-028",
+      "created": "2026-06-21",
+      "kind": "multilingual",
+      "title": "Per-document language detection, per-language embedding, direction-aware output",
+      "genesis_part": "XXI",
+      "operator_approved": true,
+      "change": {
+        "language_detection": "scripts/language_detect.py detects each document's dominant language (offline langdetect, lazy import; 'und' when unavailable) and decides script direction from Unicode ranges (no dependency, no hardcoded language assumption)",
+        "per_language_embedding": "embedding_store maps language -> model (English/undetected -> all-MiniLM-L6-v2; other -> paraphrase-multilingual-MiniLM-L12-v2; extensible registry); unavailable models degrade to multilingual/English default with a warning",
+        "query_passage_consistency": "store keeps one sub-store per model and records the embedding model per passage; a query is embedded separately by each model and scored only against that model's passages (valid same-model cosine), results merged for global top-k",
+        "staleness": "rebuild on context filename-set change OR language->model registry change OR legacy single-model schema",
+        "direction_aware_output": "docx_builder sets w:bidi/w:rtl/right-justification/bidi-language-tag per paragraph and per run from detected script; mixed LTR/RTL handled per run"
+      },
+      "reason": "Make non-English (especially RTL) review first-class: detect language per document, embed with a language-appropriate model while keeping retrieval math valid (same-model query/passage), and render deliverables in the correct reading direction. Does NOT touch the agent layer, agent-registry models, or cross-family verification (LAW-III) — only the embedding model and document output.",
+      "note": "langdetect and the multilingual model are optional/lazy: missing langdetect -> documents treated as English default (no surprise download) and script-based RTL/LTR still works; missing multilingual model -> graceful fallback with warning. English behavior is unchanged (same English model)."
+    },
+    {
+      "id": "INFRA-029",
+      "created": "2026-06-22",
+      "kind": "hygiene_firewall",
+      "title": "Protect cumulative learning (durable-vs-disposable firewall)",
+      "genesis_part": "XXVII",
+      "operator_approved": true,
+      "change": {
+        "protected_class": "the embedding store/cache; the verification cache (project tier-2 and global tier-3); discovered learnings (institution registry, citation conventions, speech-act taxonomy, search-strategy learnings, discovered APIs, document dates); the linguistic-identity and situational-awareness reference assets; the constitution AND its accumulated legislation (seed laws, amendments/DELTA ledger, precedents, task-force laws); the operator-approval governance ledger; saved snapshots; the reserved knowledge-graph/GNN ontology area",
+        "prohibition": "no per-run cleanup, automatic reorganization, or normal pipeline operation may delete, truncate, or destructively relocate any member of the protected class; per-run isolation applies ONLY to what a run produces",
+        "structural_guarantee": "the protected class must not live inside any per-run or auto-cleaned tree, so cleanup mechanisms are structurally incapable of reaching it",
+        "reset_constraint": "snapshot reset/load are the sole authorized way to discard/replace learned state and only as an explicit operator action; reset is non-destructive by construction (snapshot-first, always backs up before stripping) and never deletes the GOVERNANCE HISTORY (the constitution's amendments[]/precedents/task-force laws and the operator-approval governance ledger survive reset untouched)",
+        "amendment_tripwire": "scripts/constitution_guard.py intercepts any attempt to modify or delete an existing entry in constitution.json amendments[] or seed_laws from ANY code path (Constitution.save, reset/load/snapshot, or any agent). Such a change STOPS and requires explicit operator approval via the operator-escalation pattern; without approval it does not happen. Appending a new amendment (the normal DELTA path) is allowed. Agents cannot bypass it: they have no direct write path to constitution.json, and the guard denies any protected change that lacks an approving operator handler.",
+        "genesis_part": "codifies genesis Part XXVII (Pipeline Hygiene Standard) section B"
+      },
+      "reason": "Cumulative learning is the system's accrued value; a per-run hygiene reorganization (and the existing reset/load) must never be able to erase it. This raises the durable-vs-disposable firewall to constitutional force so that no cleanup, reset, load, or future reorganization can destroy or destructively relocate the protected class.",
+      "note": "Proposed in Pass F-1, RATIFIED by the operator in Pass F-2 (operator_approved=true; in force). Enforcement: scripts/constitution_guard.py (amendment tripwire) wired into Constitution.save and snapshot load; reset_snapshot made snapshot-first and governance-preserving. See genesis Part XXVII section B."
+    },
+    {
+      "id": "INFRA-030",
+      "created": "2026-06-22",
+      "kind": "durable_relocation",
+      "title": "Relocate the protected durable/learning class out of the disposable output tree",
+      "genesis_part": "XXVII",
+      "operator_approved": true,
+      "change": {
+        "durable_root": "new top-level durable/ tree holds the protected class OUTSIDE any auto-cleaned/output tree, so protection is structural (by location), not just rule-based",
+        "layout": "durable/cache (embedding store + verification cache tier-2), durable/global (verification cache tier-3), durable/learnings (institutions, citations, speech-acts, search-strategy learnings, discovered APIs, document dates), durable/reference (linguistic identity, situational awareness), durable/governance (model_approvals, constitution_guard_log)",
+        "constitution_stays": "config/constitution.json is NOT moved — it is governance, already firewall-protected and tripwire-guarded; moving it would add ripple without adding protection",
+        "single_source_of_truth": "scripts/durable_paths.py defines every protected path; all writers/readers import it",
+        "firewall_by_location": "reset_snapshot strips only durable/{cache,learnings,reference} and never iterates durable/global or durable/governance; snapshot save/load operate on the resettable durable subdirs only",
+        "gitignore": "durable folders + .gitkeep placeholders are tracked; large caches (embedding pickle) and per-deployment runtime contents (runtime learnings, governance ledgers) are ignored"
+      },
+      "reason": "Implements genesis Part XXVII section B by relocating the protected class so no per-run cleanup, reset, or reorganization can reach it by construction; completes INFRA-029 (which made the firewall constitutional) with the physical relocation.",
+      "note": "Append-only DELTA (allowed by the amendment tripwire; not a protected modify). No agent layer, agent-registry models, or cross-family verification touched."
+    },
+    {
+      "id": "INFRA-031",
+      "created": "2026-06-22",
+      "kind": "numbering_discipline",
+      "title": "Append-only Part numbering (no gaps) and append-only amendment IDs",
+      "genesis_part": "XXVII",
+      "operator_approved": true,
+      "change": {
+        "part_numbering": "genesis Part numbers must form an unbroken sequence with no gaps; new Parts are appended at the end with the next sequential number — never inserted mid-sequence, never reserved/skipped to leave a gap",
+        "renumber_rule": "a renumber to close an accidental gap is the only reason to shift Part numbers, and must update every upstream/downstream reference in lockstep (cross-references, README index/tree, verify gate, and constitution genesis_part fields), going through the amendment tripwire for any genesis_part change inside an existing amendment",
+        "amendment_ids": "INFRA-0xx amendment IDs are append-only: never reused, inserted, or renumbered; they are independent of Part numbers and a Part renumber never moves an amendment ID",
+        "gap_closed": "accompanies closing the prior XXII->XXIV gap: the reserved Part XXIII slot was consumed and every Part after XXII was renumbered down by one"
+      },
+      "reason": "Append-only numbering keeps every existing reference stable and prevents the silent cross-reference rot that gaps and mid-sequence insertions cause. Codifies genesis Part XXVII section H.",
+      "note": "Recorded in the same operator-approved change that closed the reserved-Part-XXIII gap (renumbering every Part after XXII down by one) and updated the INFRA-029/INFRA-030 genesis_part fields to the renumbered Pipeline Hygiene Standard (now Part XXVII). Those genesis_part modifications fired the constitution tripwire and were operator-approved; the INFRA-031 append is the normal allowed DELTA path."
+    },
+    {
+      "id": "INFRA-032",
+      "created": "2026-06-22",
+      "kind": "per_run_isolation",
+      "title": "Per-run output isolation (run-scoped output/runs/<run>/ folders)",
+      "genesis_part": "XXVII",
+      "operator_approved": true,
+      "change": {
+        "run_folder": "every run writes its artifacts into output/runs/<UTC-timestamp>__<run-id>/ (run id = 8 random hex chars); two runs never overwrite each other",
+        "run_context": "scripts/run_context.py is the single source of truth for per-run paths (modeled on durable_paths.py); the bus, cost tracker, deliverables, reference index, audit synthesis, tier-1 search cache, run summary, and agent-layer contract-violation dumps all derive their path from the RunContext computed once at boot",
+        "agent_run_awareness": "the orchestrator threads the RunContext into every AgentWrapper, so contract-violation dumps land in the current run's audit/contract_violations/ folder; no agent writes outside its run folder",
+        "collision_safe_keys": "the per-document deliverable key keeps the bare filename stem when unique and qualifies as <stem>__<ext> on collision, so policy.pdf and policy.docx no longer clobber each other",
+        "firewall_unchanged": "durable/ (INFRA-029/030) and config/constitution.json are never written into a run folder; per-run cleanup is confined to output/runs/ and is structurally incapable of reaching durable/; snapshot save/load and reset still operate only on durable/ + config",
+        "gitignore": "output/runs/** is ignored while output/runs/.gitkeep is tracked so the folder exists on a fresh clone; the legacy output/{deliverables,audit,logs} placeholders were removed",
+        "gate": "the verify gate runs every orchestrator/bus against a throwaway temp run folder so it stays non-mutating and never collides with a real run; REQUIRED_DIRS now lists output/runs instead of the legacy fixed subdirs"
+      },
+      "reason": "Implements genesis Part XXVII section A: per-run isolation so concurrent or repeated runs never overwrite one another's artifacts, while the durable protected class stays untouched. Completes the hygiene standard's disposable-vs-durable split on the disposable side.",
+      "note": "Append-only DELTA (allowed by the amendment tripwire; not a protected modify). recover_phase6 and bus_viewer default to the latest run with an optional --run. No agent-registry models or cross-family verification touched."
+    },
+    {
+      "id": "INFRA-033",
+      "created": "2026-06-22",
+      "kind": "format_master",
+      "title": "Single canonical master with on-demand derived renders (amendments)",
+      "genesis_part": "XXVII",
+      "operator_approved": true,
+      "change": {
+        "canonical_master": "the amendments_payload dict (serialized verbatim as <doc_id>__amendments.json) is the single source of truth for a document's convention-review result",
+        "derived_renders": "the .md and tracked-changes .docx are pure functions of that master (master in -> format out); they read amendment content only from the payload, so the three files cannot disagree",
+        "single_entry_point": "scripts/amendment_render.py is the one place that writes the three amendment formats (write_amendment_deliverables); pipeline.phase_6_synthesis routes through it; the old inline md/docx writers and the dead reference_index md param were removed (pipeline._render_amendments_md is now a thin delegating wrapper)",
+        "documented_canvas": ".docx takes the original document text as a presentation-only canvas to anchor tracked-change marks; it never supplies an amendment, and unanchored amendments still render in an 'Additional amendments' section so the .docx reflects the full master set",
+        "drift_guard": "the entry point asserts the rendered .md reflects the master's amendment count, and a future edit that fed a render from another source would have to change this one function",
+        "other_outputs": "cost_tracker.jsonl (append-only event master) vs cost_tracker.json (recomputed aggregate view) and audit_synthesis.md vs delta_proposals.json (two views of one summary) already follow master-and-derived and are documented as such; not changed because the two forms serve genuinely different purposes"
+      },
+      "reason": "Implements genesis Part XXVII section E: one canonical master per logical output with derived on-demand renders, so human-facing formats cannot drift from the machine-readable master.",
+      "note": "Append-only DELTA (allowed by the amendment tripwire; not a protected modify). No agent-registry models or cross-family verification touched; run-scoped output paths from INFRA-032 are unchanged (same files at the same paths)."
+    },
+    {
+      "id": "INFRA-034",
+      "created": "2026-06-22",
+      "kind": "retire_and_redaction",
+      "title": "Retire orphaned subclass layer + tier-1 cache; add always-on redaction phase",
+      "genesis_part": "XI",
+      "operator_approved": true,
+      "change": {
+        "retire_agents_layer": "deleted the orphaned scripts/agents/ per-agent subclass package; it was imported by nothing — the pipeline drives every agent via agent_wrapper.AgentWrapper by registry name (config/agent_registry.json + config/agent_contracts.json)",
+        "retire_tier1_cache": "removed the within-run tier-1 verification/search cache (it was opened but never written); the verification cache is now two durable tiers — project (tier-2) and global (tier-3) — unchanged otherwise (Part IX)",
+        "redaction_phase": "added an always-on final pipeline phase (phase 9, after synthesis and before persist) over the produced deliverables; the three Qwen agents REDACT_CLERK / REDACT_AUTHORITY / REDACT_GATE are wired via AgentWrapper + their existing contracts and decide adaptively what, if anything, to redact (simplest-sufficient: only what warrants it)",
+        "master_render_integration": "an approved + passed redaction is applied THROUGH the canonical amendments master and the md/docx are re-rendered from it (INFRA-033), so the rendered formats stay consistent",
+        "run_scoped_firewall": "the redaction phase writes only inside the run folder and never touches durable/; every decision (REDACTION_NONE/APPLIED/NOT_APPLIED/SKIPPED) is posted to the run bus (LAW-IV)",
+        "safe_degrade": "if the local Qwen backend is unreachable the phase posts REDACTION_SKIPPED and continues — it never crashes a keyless environment (the Qwen-required startup gate is a later pass)"
+      },
+      "reason": "Removes dead wiring (orphaned subclass layer, never-written tier-1 cache) and closes the redaction gap: the REDACT_* agents were defined but never invoked. Redaction now always runs at the output boundary, screening sensitive content per LAW-IV, while preserving the canonical-master render discipline (INFRA-033) and the durable firewall (INFRA-029/030).",
+      "note": "Append-only DELTA (allowed by the amendment tripwire). INST_FINDER and CITATION_RESOLVER were NOT changed: they are invoked corpus-level agents whose outputs reach the bus with no downstream reader; deleting an agent needs operator approval and was flagged, not done. No agent-registry models or cross-family verification touched."
+    },
+    {
+      "id": "INFRA-035",
+      "created": "2026-06-22",
+      "kind": "redaction_startup_gate",
+      "title": "Qwen-required startup gate with per-run operator override + GPU soft reminder",
+      "genesis_part": "XI",
+      "operator_approved": true,
+      "change": {
+        "hard_gate": "at run start (in pipeline.main boot, alongside the deprecated-model gate) the pipeline confirms the local Qwen redaction backend is reachable/configured BEFORE any agent runs; if not, the run REFUSES to start",
+        "per_run_override": "--no-redaction-override lets the operator declare THIS run non-sensitive and proceed with no redaction; in interactive mode it requires an explicit yes/no confirmation; the waiver is per-run only, never a persistent setting",
+        "governance_logging": "each waiver is appended to the governance ledger durable/governance/redaction_waivers.jsonl (timestamp + run id + reason), the same protected location as model approvals and the constitution-guard log (survives reset, never deleted)",
+        "honest_scope": "the pre-run check verifies only that torch+transformers are importable and a qwen_local model id is configured (cheap, no model load, no paid call); actual model load/download + GPU placement are verified at first redaction call, where the phase degrades safely if load fails",
+        "gpu_soft_reminder": "if Qwen is reachable but no GPU is detected, the gate prints a 'redaction slow on CPU' warning only — it never blocks and is never recorded",
+        "phase_cross_ref": "when overridden, the always-on redaction phase (INFRA-034) still runs structurally but performs no redaction and records REDACTION_SKIPPED (operator_waived) on the run bus, consistent with its safe-degrade behavior"
+      },
+      "reason": "Redaction is the always-on final pass (INFRA-034) and runs on the local Qwen backend; without Qwen there is no privacy screening at the output boundary (LAW-IV). The gate refuses to silently ship unredacted deliverables, while giving the operator a conscious, logged, per-run escape hatch for runs they declare non-sensitive.",
+      "note": "Append-only DELTA (allowed by the amendment tripwire). GPU is a soft reminder only. The Qwen-required startup gate verifies configuration pre-run; reachability of the actual model is confirmed at first use. No agent-registry models or cross-family verification touched."
+    },
+    {
+      "id": "INFRA-036",
+      "created": "2026-06-22",
+      "kind": "prompt_caching",
+      "title": "Prompt caching on both cloud paths (Claude explicit, GPT structure-and-log)",
+      "genesis_part": "VII",
+      "operator_approved": true,
+      "change": {
+        "stable_prefix_first": "every agent prompt is assembled stable-prefix-first: a STABLE prefix (agent identity + DO/DO-NOT + directives + output contract + constitution + compiled conventions, identical across an agent's calls within a run) followed by a DYNAMIC suffix (objectives, precedents, retrieved passages, recent bus, work payload). agent_wrapper.build_prompt returns (stable_prefix, dynamic_suffix); bus_reader.ContextPackage classifies CONSTITUTION + CONVENTION_REGISTRY as stable, everything else dynamic. Same information as before, reordered stable-first",
+        "claude_explicit": "call_claude marks the end of the stable prefix with cache_control {type: ephemeral} (5-minute TTL — a run fires its agent calls within minutes, so the 5-min window covers reuse without the 2x one-hour write premium); cache reads bill 0.1x, 5-min writes 1.25x; the prefix is an exact match with no dynamic content",
+        "gpt_structure_and_log": "OpenAI caches automatically, so call_gpt adds NO cache_control; it only concatenates the prompt stable-prefix-first so OpenAI's automatic prefix cache catches, then verifies it via the logged cached_tokens field",
+        "cache_cost_tracking": "the cost tracker records and logs each provider's cache fields per call (Anthropic cache_creation_input_tokens / cache_read_input_tokens; OpenAI prompt_tokens_details.cached_tokens) into cost_tracker.jsonl + the aggregate snapshot, defaulting to 0 when absent (never crash); cost is computed cache-aware (Claude read 0.1x / write 1.25x, OpenAI cached 0.5x). A silent provider-side cache loss shows the cached count dropping to zero rather than hidden",
+        "no_dynamic_in_prefix_rule": "no dynamic content (timestamp, run id, per-call text, retrieved passages, bus) may enter the stable prefix; doing so changes the prefix per call and drops the hit rate to near zero. Caching applies only above each model's minimum cacheable prefix size; small-prompt agents that do not meet it simply do not cache, and nothing is padded",
+        "unchanged": "purely a cost optimization on the call paths: cross-family verification (LAW-III), the Qwen redactors, the bus, contracts, and all agent logic are unchanged; the model sees the same effective prompt information for every agent, reordered stable-first"
+      },
+      "reason": "Input tokens dominate cost (the corpus-level agents read the full context digest, and per-doc agents repeat the constitution + conventions every call). Reusing a cached stable prefix across a run's many calls cuts input cost sharply; logging the cache fields makes the win measurable and a silent cache loss visible.",
+      "note": "Append-only DELTA (allowed by the amendment tripwire). TTL choice: 5-minute ephemeral. No agent-registry models or cross-family verification touched."
+    }
+  ]
 }
