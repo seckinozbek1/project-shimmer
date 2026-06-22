@@ -938,10 +938,26 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
             _post_redaction(orch, doc["id"], "REDACTION_SKIPPED", {"reason": "operator_waived"})
             summary[doc["id"]] = {"redacted": False, "state": "SKIPPED", "reason": "operator_waived"}
         return summary
-    # OPERATOR REDACTION RULES (INFRA-038): the machine-usable rule set the
-    # redactors APPLY (operator conventions in a confidentiality/redaction category,
-    # else the built-in defaults). Wired into the clerk work_payload below.
-    red_rules = redaction_rules(convention_registry)
+    # OPERATOR REDACTION RULES (INFRA-038): compile the machine-usable rule set the
+    # redactors APPLY, and REPORT whether the operator's rules are in force or only
+    # the defaults apply. A redaction-intent convention that fails to compile is
+    # surfaced LOUDLY (console + a structured bus note) — never a silent fallback.
+    rr = redaction_rules(convention_registry)
+    red_rules = rr["rules"]
+    print(f"[redaction-rules] operator_in_force={rr['operator_in_force']} source={rr['source']} "
+          f"({len(rr['operator_rules'])} operator + {len(red_rules) - len(rr['operator_rules'])} default)",
+          file=sys.stderr)
+    for w in rr["warnings"]:
+        print(f"[redaction-rules] WARNING: convention {w['id']} ({w['category']}) is redaction-intent "
+              f"but did NOT compile: {w['reason']} — operator rule NOT applied.", file=sys.stderr)
+    orch._post_orchestrator(
+        recipient="OPERATOR", channel="redaction", msg_type="INFORM",
+        body={"event": "REDACTION_RULES_COMPILED", "source": rr["source"],
+              "operator_in_force": rr["operator_in_force"],
+              "operator_rule_ids": [r.get("id") for r in rr["operator_rules"]],
+              "warnings": rr["warnings"]},
+        constitution_check={"laws_consulted": ["LAW-IV", "LAW-V"], "result": "RESOLVED",
+                            "resolution": "operator redaction rules compiled for the redaction pass"})
     for doc in op_docs:
         info = deliverables.get(doc["id"]) or {}
         master_path = info.get("amendments_json")

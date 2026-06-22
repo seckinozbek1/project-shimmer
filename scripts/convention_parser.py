@@ -43,16 +43,30 @@ _ACTION_PATTERNS = [
     ("annotate", re.compile(r"\b(annotate|note|comment|footnote|add\s+citation)\b", re.IGNORECASE)),
 ]
 
-# A convention in any of these categories is an OPERATOR REDACTION RULE: a
-# machine-usable instruction the redactors APPLY to document spans (LAW-IV's own
-# phrase, "content marked for redaction"). This replaces the phantom of a model
-# JUDGING what is "sensitive"; the operator declares the rules, the redactors apply
-# them. Category names are normalized lowercase (see _normalize_category).
-REDACTION_CATEGORIES = {"confidentiality", "redaction", "privacy", "pii"}
+# A convention is an OPERATOR REDACTION RULE: a machine-usable instruction the
+# redactors APPLY to document spans (LAW-IV's own phrase, "content marked for
+# redaction"). This replaces the phantom of a model JUDGING what is "sensitive";
+# the operator declares the rules, the redactors apply them.
+#
+# A convention is recognized as REDACTION-INTENT if EITHER:
+#   - its category OR id CONTAINS a redaction keyword (substring match, deliberately
+#     narrow — only these keywords; not every mention of "confidential" elsewhere), or
+#   - its rule text has redaction phrasing (an explicit redact verb OR prohibition
+#     phrasing that implies redaction), or its action is already 'redact'.
+# So `## CONV-CONFIDENTIALITY` (category slug "conv-confidentiality", contains
+# "confiden") and a rule worded "must not contain …" both qualify.
+_REDACTION_KEYWORDS = ("confiden", "redact", "privacy", "pii")
 
-# Built-in redaction rules used when the operator has not (yet) authored a
-# confidentiality convention. These are the category list this layer ships with;
-# the operator's own conventions, when present, take precedence (are merged ahead).
+# Prohibition phrasing that implies redaction without an explicit redact verb.
+_PROHIBITION_RE = re.compile(
+    r"\b(?:must|shall|may)\s+not\s+(?:contain|include|appear|carry|state|name|be\s+"
+    r"(?:published|disclosed|printed|included|shown|present))"
+    r"|\bnot\s+be\s+(?:published|disclosed|printed|included|shown)\b",
+    re.IGNORECASE)
+
+# Built-in redaction rules — a FLOOR that always applies (so the planted PII
+# categories are covered even when the operator has authored no rule). Operator
+# rules, when they compile, are ADDED ahead of these and reported as in force.
 DEFAULT_REDACTION_RULES = [
     {"id": "RED-DFLT-001", "category": "confidentiality", "action": "redact", "severity": "required",
      "rule": "National identity / passport / tax / similar government ID numbers."},
@@ -65,22 +79,68 @@ DEFAULT_REDACTION_RULES = [
 ]
 
 
-def redaction_rules(registry) -> list:
-    """Return the OPERATOR REDACTION RULES as machine-usable dicts: every
-    convention whose category is a redaction category OR whose action is 'redact'.
-    Operator-authored rules come first; if none exist, DEFAULT_REDACTION_RULES is
-    returned so the redactors always have a rule set to APPLY (never a model
-    sensitivity judgment). Each rule: {id, category, rule, severity, action}."""
+def _is_redaction_category(category, conv_id) -> bool:
+    """True if the category OR id contains a redaction keyword (substring match)."""
+    blob = f"{str(category)} {str(conv_id)}".lower()
+    return any(k in blob for k in _REDACTION_KEYWORDS)
+
+
+def _has_redaction_phrasing(text) -> bool:
+    """True if the rule text expresses redaction INTENT: an explicit redact verb
+    (the 'redact' action pattern) OR prohibition phrasing ('must not contain',
+    'shall not include', 'may not appear', …)."""
+    t = text or ""
+    return bool(_ACTION_PATTERNS[0][1].search(t)) or bool(_PROHIBITION_RE.search(t))
+
+
+def redaction_rules(registry) -> dict:
+    """Compile OPERATOR REDACTION RULES from the convention registry and REPORT
+    whether the operator's rules are in force or only the defaults apply.
+
+    A convention is REDACTION-INTENT when it is in a redaction category (keyword in
+    category/id) OR its rule text has redaction phrasing OR its action is 'redact'.
+    A redaction-intent convention with non-empty rule text COMPILES to an operator
+    rule (action=redact; its text carries the targets, e.g. company turnover, named
+    individual + ID number). A redaction-intent convention that does NOT compile
+    (no usable rule text) is NEVER silently dropped: it raises a WARNING naming the
+    id and reason, surfaced by the caller (console + bus).
+
+    Returns a report dict:
+      rules:             operator rules + DEFAULT_REDACTION_RULES (defaults are a
+                         FLOOR, always present so the planted categories are covered)
+      operator_rules:    the compiled operator rules (may be [])
+      operator_in_force: bool — True iff at least one operator rule compiled
+      source:            "operator+defaults" | "defaults"
+      warnings:          [{id, category, reason}] for redaction-intent that failed
+                         to compile (loud, never silent)
+    The redactors APPLY `rules`; the distinction operator-vs-defaults is explicit."""
     convs = (registry.get("conventions") if isinstance(registry, dict) else None) or []
-    out = []
+    operator, warnings = [], []
     for c in convs:
+        cid = str(c.get("id", ""))
         cat = str(c.get("category", "")).strip().lower()
         act = str(c.get("action", "")).strip().lower()
-        if cat in REDACTION_CATEGORIES or act == "redact":
-            out.append({"id": c.get("id"), "category": cat or "confidentiality",
-                        "rule": c.get("rule", ""), "severity": c.get("severity", "required"),
-                        "action": "redact"})
-    return out or list(DEFAULT_REDACTION_RULES)
+        rule_text = str(c.get("rule", "")).strip()
+        is_cat = _is_redaction_category(cat, cid)
+        is_phrase = _has_redaction_phrasing(rule_text)
+        if not (is_cat or is_phrase or act == "redact"):
+            continue  # not redaction-intent — leave it as an ordinary convention
+        if not rule_text:
+            warnings.append({"id": cid, "category": cat,
+                             "reason": "redaction-intent convention has no rule text to compile"})
+            continue
+        operator.append({"id": cid, "category": cat or "confidentiality",
+                         "rule": rule_text, "severity": c.get("severity", "required"),
+                         "action": "redact",
+                         "matched_by": ("category" if is_cat else "action" if act == "redact" else "phrasing")})
+    operator_in_force = bool(operator)
+    return {
+        "rules": operator + list(DEFAULT_REDACTION_RULES),
+        "operator_rules": operator,
+        "operator_in_force": operator_in_force,
+        "source": "operator+defaults" if operator_in_force else "defaults",
+        "warnings": warnings,
+    }
 
 
 _DEFAULT_CATEGORY = "unclassified"

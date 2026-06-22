@@ -915,27 +915,44 @@ def check_40_highest_revision():
 
 
 def check_41_redaction_rules():
-    """INFRA-038: conventions compile into operator REDACTION RULES that the
-    redactors APPLY (no model sensitivity judgment). The helper returns built-in
-    defaults when no confidentiality convention exists, and operator rules when
-    they do (confidentiality/redaction category or action=redact)."""
-    from convention_parser import redaction_rules, DEFAULT_REDACTION_RULES, REDACTION_CATEGORIES
-    defaults = redaction_rules({"conventions": []})
-    if not defaults or len(defaults) != len(DEFAULT_REDACTION_RULES):
-        return _fail("default redaction rules not returned for an empty registry")
-    if not all(r.get("action") == "redact" for r in defaults):
-        return _fail("default rules are not action=redact")
+    """INFRA-038 (parser widened): conventions compile into operator REDACTION
+    RULES the redactors APPLY (no model sensitivity judgment). Recognition is by
+    KEYWORD category (confiden/redact/privacy/pii in category OR id) and by
+    redaction PHRASING (redact verbs OR prohibition phrasing). redaction_rules
+    REPORTS operator-in-force vs defaults and never silently drops a redaction-
+    intent convention that fails to compile."""
+    from convention_parser import redaction_rules, DEFAULT_REDACTION_RULES
+    # empty registry -> defaults only, explicitly reported as such
+    empty = redaction_rules({"conventions": []})
+    if empty["operator_in_force"] or empty["source"] != "defaults":
+        return _fail("empty registry should report source=defaults, operator_in_force=False")
+    if len(empty["rules"]) != len(DEFAULT_REDACTION_RULES) or empty["warnings"]:
+        return _fail("empty registry should yield exactly the default floor, no warnings")
+    # the real failure case from the field: CONV-CONFIDENTIALITY (category slug
+    # "conv-confidentiality") + prohibition phrasing "must not contain ..." must now
+    # COMPILE as an operator rule (keyword category + prohibition phrasing).
     reg = {"conventions": [
-        {"id": "CONV-090", "category": "confidentiality", "rule": "redact ID numbers",
-         "action": "redact", "severity": "required"},
-        {"id": "CONV-001", "category": "identity", "rule": "x", "action": "flag", "severity": "required"}]}
-    op = redaction_rules(reg)
-    ids = {r["id"] for r in op}
-    if "CONV-090" not in ids or "CONV-001" in ids:
-        return _fail(f"operator redaction-rule selection wrong: {ids}")
-    if "confidentiality" not in REDACTION_CATEGORIES:
-        return _fail("confidentiality not a redaction category")
-    return _ok("conventions compile into operator redaction rules (defaults + operator-authored)")
+        {"id": "CONV-CONFIDENTIALITY", "category": "conv-confidentiality",
+         "rule": "must not contain confidential business figures (a named company's turnover) "
+                 "or personal identifiers (an individual's name together with an identity number)",
+         "action": "flag", "severity": "required"},
+        {"id": "CONV-001", "category": "identity", "rule": "use formal register", "action": "flag"}]}
+    res = redaction_rules(reg)
+    op_ids = {r["id"] for r in res["operator_rules"]}
+    if "CONV-CONFIDENTIALITY" not in op_ids:
+        return _fail(f"CONV-CONFIDENTIALITY did not compile as an operator rule: {op_ids}")
+    if "CONV-001" in op_ids:
+        return _fail("a non-redaction convention leaked into operator redaction rules")
+    if not res["operator_in_force"] or res["source"] != "operator+defaults":
+        return _fail("operator rule not reported in force")
+    # no silent fallback: redaction-intent (privacy category) with no rule text WARNS
+    res2 = redaction_rules({"conventions": [{"id": "CONV-PRIV", "category": "privacy", "rule": "", "action": "flag"}]})
+    if not any(w["id"] == "CONV-PRIV" for w in res2["warnings"]):
+        return _fail("redaction-intent convention with no rule text was silently dropped (no warning)")
+    if res2["operator_in_force"]:
+        return _fail("an uncompilable redaction-intent convention must not count as in force")
+    return _ok("widened compiler: keyword category + prohibition phrasing compile; "
+               "operator-vs-defaults reported; uncompilable redaction-intent warns (no silent fallback)")
 
 
 def check_42_may_use_web_enforced():
