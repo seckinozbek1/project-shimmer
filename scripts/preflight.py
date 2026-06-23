@@ -41,6 +41,7 @@ from pathlib import Path
 import agent_wrapper
 import model_registry
 import redaction_gate
+import sensitivity_layer
 
 
 # --- tiny report helpers -------------------------------------------------------
@@ -207,7 +208,7 @@ def step_qwen() -> dict:
     # Still unreachable. Never silently bypass: require an explicit, logged override.
     if _truthy(os.environ.get("SHIMMER_REDACTION_OVERRIDE")):
         run_id = "preflight-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        ledger = redaction_gate.record_redaction_waiver(root, run_id, reason="qwen_unavailable")
+        ledger = sensitivity_layer.record_redaction_waiver(root, run_id, reason="qwen_unavailable")
         _warn("Qwen unreachable; operator override ACCEPTED and LOGGED. The next run will "
               "proceed with NO redaction (per-run only).")
         _info(f"waiver written to governance ledger: {ledger}")

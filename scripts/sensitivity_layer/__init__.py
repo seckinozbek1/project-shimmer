@@ -31,6 +31,12 @@ from datetime import datetime, timezone
 
 import durable_paths
 
+# PII-rule production relocated into the privacy home in Phase 1b (was inside the
+# editorial convention_parser). Re-exported so callers use `sensitivity_layer.
+# redaction_rules`. It consumes the convention registry as DATA and imports nothing
+# editorial.
+from .rules import redaction_rules, DEFAULT_REDACTION_RULES
+
 # The full layer is not active. Flipping this to True is half the on-switch; the
 # other half is wiring the helpers below into the control flow (deferred).
 LAYER_ACTIVE = False
@@ -72,7 +78,7 @@ def record_sensitivity_override(project_root, run_id, *, reason, now_iso=None):
     (durable/governance/sensitivity_overrides.jsonl — survives reset, never
     deleted). Records that the operator consciously declared THIS run non-sensitive
     while the full LAW-IV sensitivity layer is inactive. Mirrors
-    redaction_gate.record_redaction_waiver."""
+    record_redaction_waiver (same module)."""
     path = durable_paths.sensitivity_overrides_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
@@ -84,6 +90,28 @@ def record_sensitivity_override(project_root, run_id, *, reason, now_iso=None):
         "scope": "this run only",
         "note": "operator declared this run non-sensitive and accepted running with the "
                 "full LAW-IV sensitivity layer inactive (Stage 3a built-but-unwired)",
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return path
+
+
+def record_redaction_waiver(project_root, run_id, *, reason, now_iso=None):
+    """Append a per-run redaction-waiver record to the governance ledger
+    (durable/governance/redaction_waivers.jsonl - survives reset, never deleted).
+    Records that the operator consciously waived the always-on LAW-IV scrub
+    (Mechanism 1) for THIS run only. Relocated into the privacy home in Phase 1b
+    (was scripts/redaction_gate.py); the gate's default-BLOCK and logged-waiver
+    behaviors both live with the scrubber now."""
+    path = durable_paths.redaction_waivers_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "timestamp": now_iso or datetime.now(timezone.utc).isoformat(),
+        "run_id": run_id,
+        "event": "REDACTION_WAIVED",
+        "reason": reason,
+        "scope": "this run only",
+        "note": "operator declared this run non-sensitive and accepted running with no redaction",
     }
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")

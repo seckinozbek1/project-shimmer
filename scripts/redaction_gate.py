@@ -25,7 +25,6 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -77,23 +76,3 @@ def qwen_backend_status(project_root) -> dict:
         "verified_now": "torch+transformers importable + qwen_local model id configured",
         "verified_at_first_call": "actual model load/download and GPU placement",
     }
-
-
-def record_redaction_waiver(project_root, run_id, *, reason, now_iso=None) -> Path:
-    """Append a per-run redaction-waiver record to the governance ledger
-    (durable/governance/redaction_waivers.jsonl — survives reset, never deleted).
-    Records that the operator consciously waived redaction for THIS run only."""
-    import durable_paths
-    path = durable_paths.redaction_waivers_path(project_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "timestamp": now_iso or datetime.now(timezone.utc).isoformat(),
-        "run_id": run_id,
-        "event": "REDACTION_WAIVED",
-        "reason": reason,
-        "scope": "this run only",
-        "note": "operator declared this run non-sensitive and accepted running with no redaction",
-    }
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-    return path

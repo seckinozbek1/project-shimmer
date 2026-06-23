@@ -921,7 +921,7 @@ def check_41_redaction_rules():
     redaction PHRASING (redact verbs OR prohibition phrasing). redaction_rules
     REPORTS operator-in-force vs defaults and never silently drops a redaction-
     intent convention that fails to compile."""
-    from convention_parser import redaction_rules, DEFAULT_REDACTION_RULES
+    from sensitivity_layer import redaction_rules, DEFAULT_REDACTION_RULES
     # empty registry -> NO rules + source 'none' (1c: no silent default floor)
     empty = redaction_rules({"conventions": []})
     if empty["operator_in_force"] or empty["source"] != "none":
@@ -1072,8 +1072,9 @@ def check_46_redaction_applies_to_all_artifacts():
     tolerates benign Arabic variation (ال-prefix, intervening connective, whitespace)
     so the literal-match miss from the paid run can no longer drop a span."""
     import inspect
-    from pipeline import (_sub_span, _count_span, _redact_obj,
-                          _apply_redactions_all_artifacts, _apply_redactions_to_master)
+    from sensitivity_layer.scrub import (_sub_span, _count_span, _redact_obj,
+                                         _apply_redactions_to_master, scrub_text_artifacts_and_verify)
+    from pipeline import phase_9_redaction
     # (C) the EXACT paid-run mismatch: clerk merged span vs document text with the
     # ال prefix and the "، رقم الهوية" connective between name and id.
     clerk_span = "سيد/ خالد المنصور 0000-1111-2222"
@@ -1094,12 +1095,15 @@ def check_46_redaction_applies_to_all_artifacts():
     if nn < 2 or "الواحة القابضة" in json.dumps(sm, ensure_ascii=False):
         return _fail("master scrub did not cover all string leaves (defect A on master)")
     _apply_redactions_to_master(master, [{"span": "x"}])  # smoke: in-place, no raise
-    # (A-artifacts) the live apply targets the INDEPENDENT artifacts + re-renders master
-    src = inspect.getsource(_apply_redactions_all_artifacts)
-    for key in ("per_agent_deliverable", "context_summary", "operative_summary",
-                "write_amendment_deliverables"):
-        if key not in src:
-            return _fail(f"apply path does not target {key} (defect A: master-only apply)")
+    # (A-artifacts) shape (a) split: the privacy verify targets the INDEPENDENT text
+    # artifacts; the pipeline (phase_9) re-renders the master deliverable on the
+    # editorial side (write_amendment_deliverables). Both halves are asserted.
+    vsrc = inspect.getsource(scrub_text_artifacts_and_verify)
+    for key in ("per_agent_deliverable", "context_summary", "operative_summary"):
+        if key not in vsrc:
+            return _fail(f"verify path does not target {key} (defect A: master-only apply)")
+    if "write_amendment_deliverables" not in inspect.getsource(phase_9_redaction):
+        return _fail("pipeline no longer re-renders the master deliverable after scrub")
     return _ok("approved spans scrubbed from every artifact; normalized matcher locates ال+connective spans")
 
 
@@ -1108,7 +1112,8 @@ def check_47_redaction_outcome_verified():
     VERIFIED by grepping every artifact (a survivor BLOCKS), counts are span-based
     not proposal-based, and a span located NOWHERE BLOCKS rather than silently
     zero-matching."""
-    from pipeline import (_redaction_outcome, build_redaction_escalation,
+    from sensitivity_layer.scrub import _redaction_outcome
+    from pipeline import (build_redaction_escalation,
                           _REDACTION_FAILURE, _REDACTION_PUBLIC_KINDS)
     reds = [{"span": "خالد المنصور", "replacement": "[REDACTED]"},
             {"span": "0000-1111-2222", "replacement": "[REDACTED]"}]
@@ -1179,7 +1184,7 @@ def check_49_no_silent_default_floor():
     floor. With no operator rule in force, rules is EMPTY (caller hard-stops); the
     built-in ruleset applies ONLY on conscious opt-in; the no_operator_rule BLOCK is
     wired and operator-visible."""
-    from convention_parser import redaction_rules, DEFAULT_REDACTION_RULES
+    from sensitivity_layer import redaction_rules, DEFAULT_REDACTION_RULES
     from pipeline import _REDACTION_FAILURE, _REDACTION_PUBLIC_KINDS, build_redaction_escalation
     op_reg = {"conventions": [{"id": "CONV-X", "category": "conv-confidentiality", "action": "flag",
               "rule": "must not contain an individual's identity number or turnover figures"}]}
@@ -1207,8 +1212,8 @@ def check_50_deterministic_detection_language_neutral():
     from the DATA resource, and contain ZERO language literals + no network import."""
     import inspect, ast as _ast
     from sensitivity_layer import redaction_detect as D
-    from pipeline import (_merge_redaction_proposals, _redaction_span_regex,
-                          _norm_span_key, _norm_classes)
+    from sensitivity_layer.scrub import (_merge_redaction_proposals, _redaction_span_regex,
+                                         _norm_span_key, _norm_classes)
     cues = D.load_cues(str(ROOT))
     if not cues:
         return _fail("language DATA resource (config/language_redaction_cues.json) missing/empty")
