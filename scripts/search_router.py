@@ -127,8 +127,8 @@ class SearchRouter:
         # may_use_web enforcement (INFRA-038): a roster agent reaches the web ONLY
         # if its registry flag may_use_web is true. agent=None is a system/intake
         # caller (e.g. the date cascade) — not a roster-agent action — and is
-        # permitted. Redactors are may_use_web=false, so this hard-refuses any
-        # attempt to route a redactor to the web (web-per-tier is deferred to 3b).
+        # permitted. The REDACTOR is may_use_web=false, so this hard-refuses any
+        # attempt to route the redactor to the web.
         if agent is not None and not agent_may_use_web(self.registry, agent):
             raise PermissionError(
                 f"agent {agent!r} may not use the web (may_use_web is false) — "

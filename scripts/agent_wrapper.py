@@ -485,8 +485,9 @@ class AgentWrapper:
                            error=f"no model configured for agent {self.name!r} in agent_registry.json")
             self._record_cost(r); return r
         try:
-            # Shared resident instance (loaded once per model_id) — the three
-            # redactors reuse ONE 7B instead of loading three (see _load_qwen).
+            # Shared resident instance (loaded once per model_id) — the single
+            # REDACTOR (qwen_local) reuses ONE 7B; any other qwen_local agent on
+            # the same model_id reuses it too (see _load_qwen).
             tok, mdl = _load_qwen(model_id)
         except Exception as e:
             r = CallResult("qwen_local", model_id, "", ok=False, error=f"qwen load failed: {e}")
