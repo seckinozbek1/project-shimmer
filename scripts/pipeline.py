@@ -53,7 +53,7 @@ from snapshot_manager import (
 from orchestrator import OperatorDecision, TopOrchestrator
 from pipeline_amendment_validator import validate_amendment_payload
 from reference_builder import ReferenceIndex
-import redaction_detect
+from sensitivity_layer import redaction_detect
 import redaction_gate
 import run_context as run_context_mod
 from review_scope import apply_cutoff

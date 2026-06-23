@@ -1206,7 +1206,7 @@ def check_50_deterministic_detection_language_neutral():
     canonical INFRA-037 items, merge/de-dupe with model proposals, load vocabulary
     from the DATA resource, and contain ZERO language literals + no network import."""
     import inspect, ast as _ast
-    import redaction_detect as D
+    from sensitivity_layer import redaction_detect as D
     from pipeline import (_merge_redaction_proposals, _redaction_span_regex,
                           _norm_span_key, _norm_classes)
     cues = D.load_cues(str(ROOT))
