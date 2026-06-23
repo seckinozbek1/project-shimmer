@@ -1,97 +1,70 @@
 {
   "schema_version": "1.0.0",
-  "generated_at": "2026-05-26T16:19:24.513919+00:00",
+  "generated_at": "2026-06-23T15:51:42.346101+00:00",
   "source_files": [
-    "ai_ethics_review_standards.md"
+    "review_conventions.md"
   ],
   "conventions": [
     {
       "id": "CONV-001",
-      "category": "identity",
-      "rule": "This review is conducted from the perspective of a Brussels-based AI governance consultancy specializing in EU regulatory alignment assessments.",
-      "source_file": "ai_ethics_review_standards.md",
-      "source_location": "line 4",
-      "severity": "advisory",
+      "category": "review",
+      "rule": "Operator-authored rules for reviewing procedural regulations issued under the competition-law framework. Each amendment the system proposes must cite the convention it rests on.",
+      "source_file": "review_conventions.md",
+      "source_location": "line 3",
+      "severity": "required",
       "action": "flag"
     },
     {
       "id": "CONV-002",
-      "category": "identity",
-      "rule": "The consultancy's clients are institutions preparing policy instruments for submission in contexts where EU regulatory compatibility matters.",
-      "source_file": "ai_ethics_review_standards.md",
-      "source_location": "line 5",
-      "severity": "advisory",
+      "category": "conv-deadline",
+      "rule": "A review deadline stated in a procedural regulation must match the statutory period set in the framework. A shorter or longer period is a defect unless the framework expressly permits it.",
+      "source_file": "review_conventions.md",
+      "source_location": "line 6",
+      "severity": "required",
       "action": "flag"
     },
     {
       "id": "CONV-003",
-      "category": "identity",
-      "rule": "The primary operative framework is the EU AI Act (Regulation (EU) 2024/1689), present in the context corpus. This document defines the terminology standard, the risk classification benchmark, the structural expectations, and the value hierarchy against which all reviewed documents are assessed.",
-      "source_file": "ai_ethics_review_standards.md",
-      "source_location": "line 6",
-      "severity": "advisory",
+      "category": "conv-hearing",
+      "rule": "The right to be heard must be expressly provided before any decision that adversely affects a party. A regulation that omits it is non-compliant.",
+      "source_file": "review_conventions.md",
+      "source_location": "line 9",
+      "severity": "required",
       "action": "flag"
     },
     {
       "id": "CONV-004",
-      "category": "identity",
-      "rule": "When the reviewed document's approach diverges from the primary framework's philosophy, the divergence is noted as a finding, not as an error. The consultancy recognizes that other jurisdictions may legitimately adopt different regulatory philosophies. The task is to map the gap, not to judge the choice.",
-      "source_file": "ai_ethics_review_standards.md",
-      "source_location": "line 7",
-      "severity": "advisory",
+      "category": "conv-reasons",
+      "rule": "Every authority decision must state written reasons. No exception, including urgency, may remove or defer the duty to give reasons.",
+      "source_file": "review_conventions.md",
+      "source_location": "line 12",
+      "severity": "required",
       "action": "flag"
     },
     {
       "id": "CONV-005",
-      "category": "scope",
-      "rule": "The context corpus represents the current global landscape of AI governance as known to the consultancy.",
-      "source_file": "ai_ethics_review_standards.md",
-      "source_location": "line 10",
-      "severity": "advisory",
+      "category": "conv-appeal",
+      "rule": "A procedural regulation must contain an explicit reference to the appeal or redress mechanism available against the authority's decisions.",
+      "source_file": "review_conventions.md",
+      "source_location": "line 15",
+      "severity": "required",
       "action": "flag"
     },
     {
       "id": "CONV-006",
-      "category": "scope",
-      "rule": "The reviewed document is assessed against both the primary operative framework and the broader patterns visible across the context corpus.",
-      "source_file": "ai_ethics_review_standards.md",
-      "source_location": "line 11",
-      "severity": "advisory",
+      "category": "conv-confidentiality",
+      "rule": "A published procedural regulation must not contain confidential business figures (such as a named company's turnover) or personal identifiers (such as an individual's name together with an identity number).",
+      "source_file": "review_conventions.md",
+      "source_location": "line 18",
+      "severity": "required",
       "action": "flag"
     },
     {
       "id": "CONV-007",
-      "category": "scope",
-      "rule": "Where the context corpus shows convergence across multiple jurisdictions on a principle or mechanism (e.g., transparency, risk classification, human oversight), absence of that element in the reviewed document is a stronger finding than divergence from a single framework.",
-      "source_file": "ai_ethics_review_standards.md",
-      "source_location": "line 12",
-      "severity": "advisory",
-      "action": "flag"
-    },
-    {
-      "id": "CONV-008",
-      "category": "citation_style",
-      "rule": "When reviewing a provision that addresses a specific policy area, the reviewing agents should search for whether the jurisdiction of the primary operative framework has published additional guidance, guidelines, or codes of practice on that topic beyond what is in the context corpus. If found, cite the source URL in the finding and mark as [WEB-REF].",
-      "source_file": "ai_ethics_review_standards.md",
-      "source_location": "line 15",
-      "severity": "recommended",
-      "action": "flag"
-    },
-    {
-      "id": "CONV-009",
-      "category": "citation_style",
-      "rule": "When a provision references an international framework not present in the context corpus, the agents should verify the reference exists via web search and note the correct citation.",
-      "source_file": "ai_ethics_review_standards.md",
-      "source_location": "line 16",
-      "severity": "recommended",
-      "action": "annotate"
-    },
-    {
-      "id": "CONV-010",
-      "category": "citation_style",
-      "rule": "External references discovered via web search must be cited with full URL, document title, issuing body, and year.",
-      "source_file": "ai_ethics_review_standards.md",
-      "source_location": "line 17",
+      "category": "conv-register",
+      "rule": "The register must be formal and consistent throughout. Informal or colloquial phrasing in a binding regulation is a defect.",
+      "source_file": "review_conventions.md",
+      "source_location": "line 21",
       "severity": "required",
       "action": "flag"
     }
