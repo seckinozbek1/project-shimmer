@@ -34,6 +34,37 @@ from message_bus import MessageBus
 # the asyncio task graph would otherwise.
 _GPT_SEMAPHORE = threading.Semaphore(2)
 
+# Shared resident local-model cache (qwen_local). A 4-bit 7B is several GB
+# resident; loading one per agent meant the three redactors (REDACT_CLERK ->
+# REDACT_AUTHORITY -> REDACT_GATE, all the SAME model_id) tried to hold three
+# copies and the third load failed (the redactor_unavailable that broke the
+# ladder). Key by model_id so the first qwen_local call loads once and every
+# later wrapper with that model_id REUSES the resident instance. This changes
+# only HOW the model loads, never WHAT it does (LAW-IV: still fully local).
+_QWEN_MODELS: dict = {}                 # model_id -> (tokenizer, model)
+_QWEN_LOAD_LOCK = threading.Lock()      # guards first-load so a concurrent first call cannot double-load
+
+
+def _load_qwen(model_id):
+    """Return the shared resident (tokenizer, model) for `model_id`, loading it at
+    most once. Double-checked locking: the fast path returns the cached instance
+    without the lock; the slow path loads under the lock and re-checks, so two
+    concurrent first-callers cannot each load a copy. Deterministic and local —
+    same from_pretrained arguments as before, only shared."""
+    cached = _QWEN_MODELS.get(model_id)
+    if cached is not None:
+        return cached
+    transformers = importlib.import_module("transformers")
+    with _QWEN_LOAD_LOCK:
+        cached = _QWEN_MODELS.get(model_id)        # re-check under the lock
+        if cached is None:
+            tok = transformers.AutoTokenizer.from_pretrained(model_id)
+            mdl = transformers.AutoModelForCausalLM.from_pretrained(
+                model_id, device_map="auto", load_in_4bit=True)
+            cached = (tok, mdl)
+            _QWEN_MODELS[model_id] = cached
+    return cached
+
 # Substrings (case-insensitive) that mark a rate-limit error from OpenAI.
 _RATE_LIMIT_MARKERS = ("rate limit", "ratelimit", "429", "tokens per min", "tpm")
 
@@ -454,8 +485,9 @@ class AgentWrapper:
                            error=f"no model configured for agent {self.name!r} in agent_registry.json")
             self._record_cost(r); return r
         try:
-            tok = transformers.AutoTokenizer.from_pretrained(model_id)
-            mdl = transformers.AutoModelForCausalLM.from_pretrained(model_id, device_map="auto", load_in_4bit=True)
+            # Shared resident instance (loaded once per model_id) — the three
+            # redactors reuse ONE 7B instead of loading three (see _load_qwen).
+            tok, mdl = _load_qwen(model_id)
         except Exception as e:
             r = CallResult("qwen_local", model_id, "", ok=False, error=f"qwen load failed: {e}")
             self._record_cost(r); return r

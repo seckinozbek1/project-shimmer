@@ -64,9 +64,13 @@ _PROHIBITION_RE = re.compile(
     r"|\bnot\s+be\s+(?:published|disclosed|printed|included|shown)\b",
     re.IGNORECASE)
 
-# Built-in redaction rules — a FLOOR that always applies (so the planted PII
-# categories are covered even when the operator has authored no rule). Operator
-# rules, when they compile, are ADDED ahead of these and reported as in force.
+# Built-in redaction categories. These are NOT an automatic floor (that would be
+# the engine asserting sensitivity on its own — forbidden by operator-sovereignty,
+# the 3a phantom). They remain ONLY as a named ruleset an operator can CONSCIOUSLY
+# opt into (see `redaction_rules(..., opt_in_default_ruleset=True)`); nothing
+# applies them automatically. With no operator rule in force, redaction hard-stops
+# (the caller refuses the run or the operator declares redact-nothing) — it never
+# silently substitutes these.
 DEFAULT_REDACTION_RULES = [
     {"id": "RED-DFLT-001", "category": "confidentiality", "action": "redact", "severity": "required",
      "rule": "National identity / passport / tax / similar government ID numbers."},
@@ -93,7 +97,7 @@ def _has_redaction_phrasing(text) -> bool:
     return bool(_ACTION_PATTERNS[0][1].search(t)) or bool(_PROHIBITION_RE.search(t))
 
 
-def redaction_rules(registry) -> dict:
+def redaction_rules(registry, *, opt_in_default_ruleset=False) -> dict:
     """Compile OPERATOR REDACTION RULES from the convention registry and REPORT
     whether the operator's rules are in force or only the defaults apply.
 
@@ -106,14 +110,20 @@ def redaction_rules(registry) -> dict:
     id and reason, surfaced by the caller (console + bus).
 
     Returns a report dict:
-      rules:             operator rules + DEFAULT_REDACTION_RULES (defaults are a
-                         FLOOR, always present so the planted categories are covered)
+      rules:             the rules the redactors APPLY = the compiled OPERATOR rules
+                         (NO automatic default floor — operator-sovereignty). Empty
+                         when no operator rule is in force; the caller then hard-stops.
       operator_rules:    the compiled operator rules (may be [])
       operator_in_force: bool — True iff at least one operator rule compiled
-      source:            "operator+defaults" | "defaults"
+      source:            "operator" (rules in force) | "none" (caller must hard-stop)
       warnings:          [{id, category, reason}] for redaction-intent that failed
                          to compile (loud, never silent)
-    The redactors APPLY `rules`; the distinction operator-vs-defaults is explicit."""
+    1c (operator-sovereignty): there is NO silent fallback to engine-defined default
+    categories. The built-in DEFAULT_REDACTION_RULES are applied ONLY when the
+    operator CONSCIOUSLY opts in (opt_in_default_ruleset=True); otherwise they never
+    appear in `rules`. When no operator rule is in force, redaction does not quietly
+    apply defaults — the caller refuses the run unless the operator declares
+    redact-nothing for the run (logged to the governance ledger)."""
     convs = (registry.get("conventions") if isinstance(registry, dict) else None) or []
     operator, warnings = [], []
     for c in convs:
@@ -134,11 +144,20 @@ def redaction_rules(registry) -> dict:
                          "action": "redact",
                          "matched_by": ("category" if is_cat else "action" if act == "redact" else "phrasing")})
     operator_in_force = bool(operator)
+    # 1c: NO automatic default floor. Defaults are included ONLY on conscious opt-in.
+    rules = list(operator)
+    if opt_in_default_ruleset:
+        rules += list(DEFAULT_REDACTION_RULES)
+    if operator_in_force:
+        source = "operator+optin_defaults" if opt_in_default_ruleset else "operator"
+    else:
+        source = "optin_defaults" if opt_in_default_ruleset else "none"
     return {
-        "rules": operator + list(DEFAULT_REDACTION_RULES),
+        "rules": rules,
         "operator_rules": operator,
         "operator_in_force": operator_in_force,
-        "source": "operator+defaults" if operator_in_force else "defaults",
+        "source": source,
+        "defaults_available": True,   # named ruleset exists for conscious opt-in (never auto)
         "warnings": warnings,
     }
 

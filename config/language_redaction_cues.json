@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0.0",
+  "description": "Per-language DATA resource for the LANGUAGE-NEUTRAL deterministic redaction detectors (INFRA-038). Detector/cue CODE contains ZERO language literals; ALL natural-language vocabulary lives here and is loaded at runtime. The operator extends this per language WITHOUT touching code. Two distinct uses: (a) shape_cues are scanned against the OPERATOR RULE TEXT to learn which regular-shape detectors a rule AUTHORIZES (engine never asserts sensitivity on its own); (b) titles/magnitude_words/currency_words/connectives/definite_articles/diacritics_class/script_class are scanned against the DOCUMENT TEXT to locate spans. Code unions all language entries, so it needs no per-document language guess. Adding a language = adding an entry here.",
+  "languages": {
+    "en": {
+      "definite_articles": [],
+      "diacritics_class": "",
+      "script_class": "A-Za-z",
+      "letter_class": "A-Za-z",
+      "digit_class_ext": "",
+      "decimal_ext": "",
+      "separator_ext": "‐-―−⁃",
+      "titles": ["mr", "mrs", "ms", "miss", "dr", "prof", "sir", "madam", "mx"],
+      "magnitude_words": ["thousand", "million", "billion", "trillion", "k", "m", "bn", "tn"],
+      "currency_words": ["usd", "eur", "gbp", "sar", "aed", "qar", "kwd", "dollar", "dollars", "euro", "euros", "pound", "pounds", "riyal", "dirham"],
+      "connectives": ["no", "number", "id", "ref", "ref.", "tax", "reg"],
+      "shape_cues": {
+        "identifier": ["identity number", "identifier", "id number", "national id", "passport", "tax number", "registration number", "personal number", "social security"],
+        "figure": ["turnover", "revenue", "financial figure", "financial figures", "profit", "profits", "sales", "earnings", "income"],
+        "name": ["name", "named individual", "named natural person", "named person", "individual", "person", "natural person"]
+      }
+    },
+    "ar": {
+      "definite_articles": ["ال"],
+      "diacritics_class": "ً-ْٰـ",
+      "script_class": "؀-ۿ",
+      "letter_class": "ء-يٱ-ێ",
+      "digit_class_ext": "٠-٩۰-۹",
+      "decimal_ext": "٫٬",
+      "separator_ext": "",
+      "titles": ["السيد", "سيد", "السيدة", "سيدة", "الآنسة", "الدكتور", "د.", "الأستاذ", "الاستاذ", "الشيخ", "المهندس"],
+      "magnitude_words": ["ألف", "الف", "مليون", "مليار", "بليون", "تريليون"],
+      "currency_words": ["ريال", "درهم", "دولار", "جنيه", "دينار", "يورو"],
+      "connectives": ["رقم", "الهوية", "هوية", "الوطني", "رقم الهوية"],
+      "shape_cues": {
+        "identifier": ["رقم الهوية", "هوية", "رقم وطني", "الرقم الوطني", "جواز", "بطاقة", "السجل", "رقم تعريف"],
+        "figure": ["رقم أعمال", "رقم الأعمال", "إيرادات", "ايرادات", "أرباح", "ارباح", "عائدات", "مالية"],
+        "name": ["اسم", "شخص", "السيد", "فرد"]
+      }
+    }
+  }
+}

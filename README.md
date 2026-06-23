@@ -200,28 +200,63 @@ the output boundary — they do **not** judge "sensitivity" on their own. LAW-IV
 own phrase, *"content marked for redaction,"* is the basis: the operator declares
 the rules (a `confidentiality`/`redaction` convention category — national ID
 numbers, named individuals, confidential turnover/financial figures, business
-secrets; built-in defaults apply until the operator authors their own), and the
-redactors apply them to document spans (INFRA-038). `REDACT_CLERK` proposes tier
-1-2 redactions for spans that match a rule, `REDACT_AUTHORITY` approves tier 3-4
-with an adversarial test, and `REDACT_GATE` gives the final pass/fail. An approved
-and passed redaction is applied through the amendments master and the `.md`/`.docx`
-are re-rendered from it, so the formats stay consistent (Part XXVII §E). Redaction
-writes only inside the run folder and never touches `durable/`; every decision is
-posted to the run bus. *(End-to-end AUTHORITY→GATE→applied is unproven until a paid
-run; a local clerk re-rehearsal confirms the clerk stage.)*
+secrets), and the redactors apply them to document spans (INFRA-038). The three
+redactors **share one resident local model** (a module-level cache keyed by
+`model_id`, load-locked), so the `REDACT_CLERK → REDACT_AUTHORITY → REDACT_GATE`
+ladder runs to completion instead of exhausting memory on a third 7B load:
+`REDACT_CLERK` proposes tier 1-2 redactions for spans that match a rule,
+`REDACT_AUTHORITY` approves tier 3-4 with an adversarial test, and `REDACT_GATE`
+gives the final pass/fail.
+
+**Operator-sovereignty — no silent default floor.** Redaction acts **only** on
+compiled operator rules. There is **no engine-side default-categories floor**: when
+no operator redaction rule is in force the run **hard-stops** with a conscious
+operator choice — supply a compiling rule, or re-run with `--no-redaction-override`
+to declare redact-nothing for the run (logged to the governance ledger). The
+built-in category set remains only as a conscious opt-in, never automatic. The
+engine never invents sensitivity.
+
+**Deterministic local detection (language-neutral).** For the regular shapes an
+operator rule authorizes — grouped-digit identifiers, number+magnitude figures — a
+deterministic local detector runs over the document text and proposes the spans
+**every run, independent of 7B recall**. A bare personal name is lifted by local
+cues (a title/honorific, or a name connective-linked to a detected identifier).
+Deterministic proposals are **merged** (not replaced) with the model's, de-duped by
+normalized span. The detector code carries **zero language literals**: all
+vocabulary (titles, magnitude/currency words, connectives, articles, script
+classes, and the shape-authorization cues) lives in `config/language_redaction_cues.json`,
+which the operator extends per language without touching code.
+
+**Apply scrubs every artifact; "applied" means verified-absent.** An approved
+redaction is scrubbed from **every operator-facing artifact** — the amendments
+master, the re-rendered `.md`/`.docx` (the `.docx` body canvas included), the
+per-agent deliverable, and the summaries — not just three master fields. Matching
+is deterministic and tolerant (article/diacritic/connective variation). A proposed
+span that can be located **nowhere** BLOCKs (`span_dropped`) rather than silently
+zero-matching. Then the **real gate**: after apply, every artifact is re-grepped for
+each approved span and the run **BLOCKs** (`pii_survives_in_deliverable`) if any
+survives — so *applied* means *verified absent everywhere shippable*, not merely
+*attempted*. Redaction writes only inside the run folder, never touches `durable/`,
+and posts every decision to the run bus. *(Proven end-to-end by a free local
+re-rehearsal: all planted spans reach zero survivals across all six artifacts.)*
 
 **A clerk redaction item** pins `kind="redaction"` and carries `span`, `category`,
-`replacement`, `method`, and a `rule_id` identifying the rule that matched (e.g.
-`CONV-006` operator rule vs `RED-DFLT-*` default floor), so attribution is provable
-per span. The pipeline detects a redaction **structurally** — any item with a
-`span` plus a `replacement` / `method=REDACT` / a redaction `category` — not by the
-`kind` tag alone, so a redaction a 7B mis-tags (e.g. as `finding`) is still applied;
-a free-text model label is never the sole gate on a LAW-IV filter. Outcome
-semantics: `items: []` is a legitimate "nothing to redact" (`REDACTION_NONE`), but
-clerk output that resolves to **no** valid redaction is **not** a silent NONE — it
-**BLOCKS** and escalates via `operator_escalation/v1`. The redactor's raw + parsed
-output is persisted to the run audit dir on every path (NONE / proposed / BLOCKED)
-for diagnosis.
+`replacement`, `method`, and a `rule_id` identifying the operator rule that matched
+(e.g. `CONV-006`), so attribution is provable per span. The pipeline detects a
+redaction **structurally** — any item with a `span` plus a `replacement` /
+`method=REDACT` / a redaction `category` — not by the `kind` tag alone, so a
+redaction a 7B mis-tags (e.g. as `finding`) is still applied; a free-text model
+label is never the sole gate on a LAW-IV filter. Outcome semantics: `items: []` is a
+legitimate "nothing to redact" (`REDACTION_NONE`), but clerk output that resolves to
+**no** valid redaction is **not** a silent NONE — it **BLOCKS** and escalates via
+`operator_escalation/v1`. The redactor's raw + parsed output is persisted to the run
+audit dir on every path (NONE / proposed / BLOCKED) for diagnosis.
+
+**Honest recall residual.** Regular-shaped PII (identifiers, figures) is guaranteed
+deterministically every run; a name is guaranteed when a local cue is present. An
+**unmarked, unpatterned free-text name or company with no cue** remains
+model-recall-dependent — the irreducible residual, closed only by operator marking,
+more cues, or a local NER model (held).
 
 **Full sensitivity philosophy — deferred (built but unwired).** The larger LAW-IV
 layer — the pipeline reasoning about *sensitivity as a first-class concept*,
@@ -574,7 +609,7 @@ pipeline interactively.
 Other entry points:
 
 ```bash
-py -3.9 -X utf8 scripts/verify_session1.py      # 46-check verification gate
+py -3.9 -X utf8 scripts/verify_session1.py      # 51-check verification gate
 py -3.9 scripts/bus_viewer.py --follow          # live bus + cost stream (latest run)
 py -3.9 scripts/bus_viewer.py --run NAME        # view a specific run folder
 ```
@@ -668,7 +703,7 @@ last.
 
 ## Verify gate
 
-`scripts/verify_session1.py` runs 46 structural invariants. Examples:
+`scripts/verify_session1.py` runs 51 structural invariants. Examples:
 
 - bus parses as JSONL and is append-only
 - every bus message has a non-empty `constitution_check`
@@ -686,8 +721,8 @@ last.
 py -3.9 -X utf8 scripts/verify_session1.py
 ```
 
-Latest run: **PASS=46, WARN=0, FAIL=0**. The gate is a standalone harness; a
-FAIL signals a regression to fix before relying on a run. PASS=46 is the
+Latest run: **PASS=51, WARN=0, FAIL=0**. The gate is a standalone harness; a
+FAIL signals a regression to fix before relying on a run. PASS=51 is the
 stability target; any drop flags regression before it leaves the local machine.
 The gate is non-mutating: it exercises components against a throwaway temporary
 run folder, so running it never writes into `output/runs/` or `durable/`.
@@ -796,7 +831,8 @@ project_shimmer/
 │   ├── constitution.json
 │   ├── agent_registry.json          # 14 agents, DOES / DOES_NOT
 │   ├── agent_contracts.json         # output schemas
-│   └── convention_registry.json     # compiled conventions
+│   ├── convention_registry.json     # compiled conventions
+│   └── language_redaction_cues.json # per-language redaction vocabulary (DATA; no literals in code)
 ├── input/
 │   ├── context/                     # corpus to cite against
 │   ├── operational/                 # document under review
@@ -821,8 +857,9 @@ project_shimmer/
 ├── reference/                       # static references
 └── scripts/
     ├── pipeline.py                  # entry point
-    ├── verify_session1.py           # 46-check gate
+    ├── verify_session1.py           # 51-check gate
     ├── agent_wrapper.py             # the single agent driver (by registry name)
+    ├── redaction_detect.py          # deterministic local PII detectors (language-neutral)
     ├── guard_secrets.py             # pre-commit scanner
     └── ...
 ```

@@ -922,12 +922,12 @@ def check_41_redaction_rules():
     REPORTS operator-in-force vs defaults and never silently drops a redaction-
     intent convention that fails to compile."""
     from convention_parser import redaction_rules, DEFAULT_REDACTION_RULES
-    # empty registry -> defaults only, explicitly reported as such
+    # empty registry -> NO rules + source 'none' (1c: no silent default floor)
     empty = redaction_rules({"conventions": []})
-    if empty["operator_in_force"] or empty["source"] != "defaults":
-        return _fail("empty registry should report source=defaults, operator_in_force=False")
-    if len(empty["rules"]) != len(DEFAULT_REDACTION_RULES) or empty["warnings"]:
-        return _fail("empty registry should yield exactly the default floor, no warnings")
+    if empty["operator_in_force"] or empty["source"] != "none":
+        return _fail("empty registry should report source=none, operator_in_force=False (1c)")
+    if empty["rules"] or empty["warnings"]:
+        return _fail("empty registry should yield NO rules (no default floor) and no warnings")
     # the real failure case from the field: CONV-CONFIDENTIALITY (category slug
     # "conv-confidentiality") + prohibition phrasing "must not contain ..." must now
     # COMPILE as an operator rule (keyword category + prohibition phrasing).
@@ -943,8 +943,8 @@ def check_41_redaction_rules():
         return _fail(f"CONV-CONFIDENTIALITY did not compile as an operator rule: {op_ids}")
     if "CONV-001" in op_ids:
         return _fail("a non-redaction convention leaked into operator redaction rules")
-    if not res["operator_in_force"] or res["source"] != "operator+defaults":
-        return _fail("operator rule not reported in force")
+    if not res["operator_in_force"] or res["source"] != "operator":
+        return _fail("operator rule not reported in force (source must be 'operator', no floor)")
     # no silent fallback: redaction-intent (privacy category) with no rule text WARNS
     res2 = redaction_rules({"conventions": [{"id": "CONV-PRIV", "category": "privacy", "rule": "", "action": "flag"}]})
     if not any(w["id"] == "CONV-PRIV" for w in res2["warnings"]):
@@ -1066,6 +1066,204 @@ def check_45_redaction_structural_no_silent_none():
     return _ok("structural redaction detection + category normalization; non-empty-unresolved BLOCKS, empty is NONE")
 
 
+def check_46_redaction_applies_to_all_artifacts():
+    """Redaction APPLICATION fix (defect A + C): approved spans are scrubbed from
+    EVERY operator-facing artifact (not only the amendments master), and the matcher
+    tolerates benign Arabic variation (ال-prefix, intervening connective, whitespace)
+    so the literal-match miss from the paid run can no longer drop a span."""
+    import inspect
+    from pipeline import (_sub_span, _count_span, _redact_obj,
+                          _apply_redactions_all_artifacts, _apply_redactions_to_master)
+    # (C) the EXACT paid-run mismatch: clerk merged span vs document text with the
+    # ال prefix and the "، رقم الهوية" connective between name and id.
+    clerk_span = "سيد/ خالد المنصور 0000-1111-2222"
+    doc_text = ("ويتولى ملف هذا التركز السيد/ خالد المنصور، رقم الهوية 0000-1111-2222.")
+    if clerk_span in doc_text:
+        return _fail("test premise broken: the merged span should NOT match literally")
+    new, n = _sub_span(doc_text, clerk_span, "[REDACTED]")
+    if n < 1 or "خالد المنصور" in new or "0000-1111-2222" in new:
+        return _fail("normalized matcher failed to locate/scrub the merged ال+connective span")
+    # atomic spans (post clerk-nudge) match literally too
+    for s in ("خالد المنصور", "0000-1111-2222", "الواحة القابضة", "4.2 مليار"):
+        if _count_span(doc_text + " الواحة القابضة 4.2 مليار", s) < 1:
+            return _fail(f"atomic span not matched: {s!r}")
+    # (A-master) the master scrub covers EVERY string leaf, not just 3 fields
+    master = {"amendments": [{"original_text": "x الواحة القابضة y",
+                              "nested": {"deep": "الواحة القابضة"}}]}
+    sm, nn = _redact_obj(master, [{"span": "الواحة القابضة"}])
+    if nn < 2 or "الواحة القابضة" in json.dumps(sm, ensure_ascii=False):
+        return _fail("master scrub did not cover all string leaves (defect A on master)")
+    _apply_redactions_to_master(master, [{"span": "x"}])  # smoke: in-place, no raise
+    # (A-artifacts) the live apply targets the INDEPENDENT artifacts + re-renders master
+    src = inspect.getsource(_apply_redactions_all_artifacts)
+    for key in ("per_agent_deliverable", "context_summary", "operative_summary",
+                "write_amendment_deliverables"):
+        if key not in src:
+            return _fail(f"apply path does not target {key} (defect A: master-only apply)")
+    return _ok("approved spans scrubbed from every artifact; normalized matcher locates ال+connective spans")
+
+
+def check_47_redaction_outcome_verified():
+    """Redaction APPLICATION fix (defect B + D + the real gate): the outcome is
+    VERIFIED by grepping every artifact (a survivor BLOCKS), counts are span-based
+    not proposal-based, and a span located NOWHERE BLOCKS rather than silently
+    zero-matching."""
+    from pipeline import (_redaction_outcome, build_redaction_escalation,
+                          _REDACTION_FAILURE, _REDACTION_PUBLIC_KINDS)
+    reds = [{"span": "خالد المنصور", "replacement": "[REDACTED]"},
+            {"span": "0000-1111-2222", "replacement": "[REDACTED]"}]
+    # all-clean: applied == proposed, nothing dropped, nothing survives
+    clean = _redaction_outcome(
+        {"deliverable.md": "x خالد المنصور y 0000-1111-2222 z", "summary.md": "none"}, reds)
+    if clean["dropped"] or clean["survivors"] or clean["applied"] != clean["proposed"]:
+        return _fail(f"clean apply misreported: {clean['dropped']} {clean['survivors']} "
+                     f"{clean['applied']}/{clean['proposed']}")
+    # (D) counts are span-based actual substitutions, never the proposal count
+    if clean["by_artifact"].get("deliverable.md") != 2 or clean["by_artifact"].get("summary.md") != 0:
+        return _fail("by_artifact counts are not span-based actual substitutions")
+    # (B) a span located NOWHERE -> dropped (no silent zero-match)
+    drop = _redaction_outcome({"a.md": "nothing here"}, [{"span": "غير موجود"}])
+    if not drop["dropped"] or drop["applied"] != 0:
+        return _fail("a span located nowhere must be 'dropped' (no silent zero-match)")
+    # the real gate: simulate a survivor the scrubber could not remove (overlapping
+    # replacement leaving the span) -> survivors must be reported
+    surv = _redaction_outcome({"x.md": "خالد المنصور"},
+                              [{"span": "خالد المنصور", "replacement": "خالد المنصور (kept)"}])
+    if not surv["survivors"]:
+        return _fail("post-apply grep did not catch a surviving span (real gate inert)")
+    # the two application-layer BLOCK kinds exist and surface to the operator
+    for fk in ("span_dropped", "pii_survives_in_deliverable"):
+        if fk not in _REDACTION_FAILURE or fk not in _REDACTION_PUBLIC_KINDS:
+            return _fail(f"failure_kind {fk} missing from taxonomy / not operator-visible")
+        esc = build_redaction_escalation(doc_id="d", document_name="d", stage="REDACT_APPLY",
+                                         failure_kind=fk, raw_output_path=None,
+                                         detail={"survivors": {"s": ["x"]}})
+        if esc["failure_kind"] != fk or "detail" not in esc:
+            return _fail(f"escalation for {fk} not surfaced with detail")
+    return _ok("outcome verified by grep (survivor BLOCKS); span-based counts; located-nowhere BLOCKS")
+
+
+def check_48_qwen_shared_model_cache():
+    """Shared local-model load: qwen_local agents reuse ONE resident instance per
+    model_id (the three redactors share a single 7B instead of loading three, which
+    is what broke the ladder). Verifies the cache returns the SAME object on repeat
+    and that call_qwen routes through the shared loader — without loading a real 7B."""
+    import inspect
+    from agent_wrapper import _load_qwen, _QWEN_MODELS, _QWEN_LOAD_LOCK, AgentWrapper
+    # the cache must be keyed and lock-guarded
+    if not hasattr(_QWEN_LOAD_LOCK, "acquire"):
+        return _fail("no load lock guarding the shared qwen model cache")
+    # fast path: a pre-seeded model_id returns the SAME instance on every call (no reload)
+    key = "__verify_sentinel_model__"
+    sentinel = (object(), object())
+    _QWEN_MODELS.pop(key, None)
+    _QWEN_MODELS[key] = sentinel
+    try:
+        a = _load_qwen(key)
+        b = _load_qwen(key)
+        if a is not sentinel or b is not sentinel or a is not b:
+            return _fail("shared cache did not return the one resident instance for a model_id")
+    finally:
+        _QWEN_MODELS.pop(key, None)            # leave module state as we found it
+    # call_qwen must route loads through the shared loader (no inline second copy)
+    src = inspect.getsource(AgentWrapper.call_qwen)
+    if "_load_qwen" not in src:
+        return _fail("call_qwen does not load via the shared _load_qwen cache")
+    if "from_pretrained" in src:
+        return _fail("call_qwen still loads its own model copy (from_pretrained inline)")
+    return _ok("qwen_local shares one resident instance per model_id (lock-guarded); call_qwen uses it")
+
+
+def check_49_no_silent_default_floor():
+    """1c (operator-sovereignty): redaction_rules() has NO automatic engine-default
+    floor. With no operator rule in force, rules is EMPTY (caller hard-stops); the
+    built-in ruleset applies ONLY on conscious opt-in; the no_operator_rule BLOCK is
+    wired and operator-visible."""
+    from convention_parser import redaction_rules, DEFAULT_REDACTION_RULES
+    from pipeline import _REDACTION_FAILURE, _REDACTION_PUBLIC_KINDS, build_redaction_escalation
+    op_reg = {"conventions": [{"id": "CONV-X", "category": "conv-confidentiality", "action": "flag",
+              "rule": "must not contain an individual's identity number or turnover figures"}]}
+    rr = redaction_rules(op_reg)
+    if not rr["operator_in_force"] or rr["rules"] != rr["operator_rules"]:
+        return _fail("operator-in-force rules must be exactly the operator rules (no default floor)")
+    none = redaction_rules({"conventions": []})
+    if none["operator_in_force"] or none["rules"] or none["source"] != "none":
+        return _fail("no-operator-rule must yield EMPTY rules + source 'none' (no silent default floor)")
+    optin = redaction_rules({"conventions": []}, opt_in_default_ruleset=True)
+    if optin["rules"] != list(DEFAULT_REDACTION_RULES):
+        return _fail("conscious opt-in must apply exactly the named default ruleset")
+    if "no_operator_rule" not in _REDACTION_FAILURE or "no_operator_rule" not in _REDACTION_PUBLIC_KINDS:
+        return _fail("no_operator_rule BLOCK not wired / not operator-visible")
+    esc = build_redaction_escalation(doc_id="d", document_name="d", stage="REDACT_RULES",
+                                     failure_kind="no_operator_rule", raw_output_path=None)
+    if esc["failure_kind"] != "no_operator_rule":
+        return _fail("no_operator_rule escalation not surfaced")
+    return _ok("no silent default floor; empty rules + hard-stop when no operator rule; defaults opt-in only")
+
+
+def check_50_deterministic_detection_language_neutral():
+    """1b: deterministic detectors fire ONLY for operator-authorized categories, emit
+    canonical INFRA-037 items, merge/de-dupe with model proposals, load vocabulary
+    from the DATA resource, and contain ZERO language literals + no network import."""
+    import inspect, ast as _ast
+    import redaction_detect as D
+    from pipeline import (_merge_redaction_proposals, _redaction_span_regex,
+                          _norm_span_key, _norm_classes)
+    cues = D.load_cues(str(ROOT))
+    if not cues:
+        return _fail("language DATA resource (config/language_redaction_cues.json) missing/empty")
+    op_rules = [{"id": "CONV-006", "category": "confidentiality",
+                 "rule": "must not contain a turnover figure or an identity number for a named individual"}]
+    # authorized -> detectors fire; unauthorized (no operator rule) -> nothing fires
+    txt = "ref 0000-1111-2222 and 4.2 million reported"
+    fired = D.detect(str(ROOT), txt, op_rules)
+    if not any(it["detector"] == "identifier" for it in fired):
+        return _fail("identifier detector did not fire for an operator-authorized category")
+    for it in fired:  # canonical INFRA-037 shape + rule attribution
+        for k in ("span", "category", "replacement", "method", "kind", "rule_id"):
+            if k not in it:
+                return _fail(f"deterministic item missing canonical field {k}")
+        if it["kind"] != "redaction" or it["rule_id"] != "CONV-006":
+            return _fail("deterministic item not canonical redaction / wrong rule attribution")
+    if D.detect(str(ROOT), txt, []):
+        return _fail("detector fired with NO operator rule (engine asserting sensitivity)")
+    # merge de-dupes by normalized span (deterministic attribution wins)
+    merged = _merge_redaction_proposals([{"span": "0000-1111-2222", "rule_id": "DET"}],
+                                        [{"span": "0000-1111-2222", "rule_id": "MODEL"}])
+    if len(merged) != 1 or merged[0]["rule_id"] != "DET":
+        return _fail("merge did not de-dupe by normalized span / lost deterministic attribution")
+    # LANGUAGE-NEUTRAL: detector + cue/normalizer code carries no non-ASCII char and
+    # no multi-word DATA cue phrase; vocabulary lives only in the resource.
+    srcs = [inspect.getsource(D)]
+    for fn in (_redaction_span_regex, _norm_span_key, _norm_classes):
+        srcs.append(inspect.getsource(fn))
+    blob = "\n".join(srcs)
+    nonascii = [c for c in blob if ord(c) > 127]
+    if nonascii:
+        return _fail(f"language literal (non-ASCII) in detector/cue code: {sorted(set(nonascii))[:8]}")
+    phrases = []
+    for entry in cues.values():
+        for key in ("titles", "magnitude_words", "currency_words", "connectives", "definite_articles"):
+            phrases += [w for w in (entry.get(key) or [])]
+        for vals in (entry.get("shape_cues") or {}).values():
+            phrases += list(vals)
+    leaked = [p for p in phrases if " " in p and p in blob]
+    if leaked:
+        return _fail(f"multi-word DATA vocabulary appears as a literal in code: {leaked[:5]}")
+    # no network/translation import in the detector module
+    tree = _ast.parse(inspect.getsource(D))
+    mods = set()
+    for n in _ast.walk(tree):
+        if isinstance(n, _ast.Import):
+            mods.update(a.name.split(".")[0] for a in n.names)
+        elif isinstance(n, _ast.ImportFrom) and n.module:
+            mods.add(n.module.split(".")[0])
+    banned = {"socket", "requests", "urllib", "http", "httpx", "openai", "anthropic", "googletrans"}
+    if mods & banned:
+        return _fail(f"detector module imports a network/translation library: {mods & banned}")
+    return _ok("deterministic detection authorized-only, canonical, merged/de-duped, DATA-driven, no literals/network")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -1122,6 +1320,11 @@ CHECKS = [
     ("43 sensitivity layer built-but-inactive + logged override (INFRA-038)", check_43_sensitivity_layer_gate),
     ("44 REDACT_CLERK contract pins kind=redaction + rule_id", check_44_redaction_clerk_contract_pins),
     ("45 redaction detected structurally; no silent NONE", check_45_redaction_structural_no_silent_none),
+    ("46 redaction scrubs ALL artifacts + normalized matching", check_46_redaction_applies_to_all_artifacts),
+    ("47 redaction outcome verified (survivor BLOCKS; span counts)", check_47_redaction_outcome_verified),
+    ("48 qwen_local shares one resident model per model_id", check_48_qwen_shared_model_cache),
+    ("49 no silent default redaction floor (operator-sovereignty)", check_49_no_silent_default_floor),
+    ("50 deterministic detection, authorized-only + language-neutral", check_50_deterministic_detection_language_neutral),
 ]
 
 

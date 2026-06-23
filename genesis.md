@@ -696,21 +696,46 @@ REDACTION — FINAL PASS, ALWAYS RUNS (pipeline phase 9; after synthesis, before
   REDACT_AUTHORITY approves tier 3-4 + adversarial test, REDACT_GATE final
   pass/fail) APPLY the operator redaction rules (LAW-IV's phrase "content marked
   for redaction") to document/deliverable spans at the output boundary — they do
-  NOT judge sensitivity themselves (INFRA-038). A REDACT_CLERK redaction item pins
-  kind="redaction" and carries span, category, replacement, method, and a rule_id
-  (the matched rule: CONV-* operator rule or RED-DFLT-* default) for attribution.
-  phase_9 detects a redaction STRUCTURALLY (span + replacement / method=REDACT /
-  redaction category), not by the kind tag alone, so a mis-tagged redaction is
-  still applied; items:[] is a legitimate REDACTION_NONE, but clerk output that
-  resolves to no valid redaction BLOCKS and escalates (operator_escalation/v1) —
-  never a silent NONE. The full sensitivity layer
+  NOT judge sensitivity themselves (INFRA-038). The three redactors SHARE ONE
+  resident local model (module-level cache keyed by model_id, load-locked), so the
+  clerk->AUTHORITY->GATE ladder runs to completion instead of failing the third 7B
+  load on memory.
+  OPERATOR-SOVEREIGNTY (no silent floor): redaction acts ONLY on compiled operator
+  rules. There is NO engine-side default-categories floor — when no operator rule is
+  in force the run HARD-STOPS with a conscious operator choice (supply a compiling
+  rule, or the --no-redaction-override redact-nothing waiver, logged to the
+  governance ledger); the built-in set is a conscious opt-in only, never automatic.
+  DETERMINISTIC LOCAL DETECTION (language-neutral): for the regular shapes an
+  operator rule authorizes (grouped-digit identifiers, number+magnitude figures) a
+  deterministic local detector proposes spans every run regardless of 7B recall; a
+  bare name is lifted by local cues (title/honorific, or a name connective-linked to
+  a detected identifier). Deterministic proposals are MERGED (not replaced) with the
+  model's, de-duped by normalized span. The detector code carries ZERO language
+  literals — all vocabulary (titles, magnitude/currency words, connectives, articles,
+  script classes, shape-authorization cues) lives in config/language_redaction_cues.json,
+  operator-extensible per language.
+  A REDACT_CLERK redaction item pins kind="redaction" and carries span, category,
+  replacement, method, and a rule_id (the matched operator rule, e.g. CONV-*) for
+  attribution. phase_9 detects a redaction STRUCTURALLY (span + replacement /
+  method=REDACT / redaction category), not by the kind tag alone, so a mis-tagged
+  redaction is still applied; items:[] is a legitimate REDACTION_NONE, but clerk
+  output that resolves to no valid redaction BLOCKS and escalates
+  (operator_escalation/v1) — never a silent NONE. The full sensitivity layer
   (sensitivity as a first-class concept; masking from API/web; may_handle_sensitive
   routing) is built but UNWIRED and deferred, hard-gated by
-  --sensitivity-layer-inactive-override. An approved + passed redaction
-  is applied THROUGH the amendments master and the md/docx are re-rendered from
-  it, so the formats stay consistent (Part XXVII §E). Run-scoped only — never
-  touches durable/. Every decision is posted to the run bus. Degrades safely if
-  the local Qwen backend is unreachable (skip-with-warning, no crash).
+  --sensitivity-layer-inactive-override. An approved + passed redaction is scrubbed
+  from EVERY operator-facing artifact — the amendments master, the re-rendered
+  md/docx (the docx body canvas included), the per-agent deliverable, and the
+  summaries — not just three master fields; matching is deterministic and tolerant
+  (article/diacritic/connective variation). A proposed span located NOWHERE BLOCKS
+  (span_dropped) rather than silently zero-matching. THE REAL GATE: after apply,
+  every artifact is re-grepped for each approved span and the run BLOCKS
+  (pii_survives_in_deliverable) if any survives — so "applied" means VERIFIED ABSENT
+  everywhere shippable, not merely attempted (proven end-to-end by a free local
+  re-rehearsal). Honest residual: an unmarked, unpatterned free-text name/company
+  with no cue stays model-recall-dependent. Run-scoped only — never touches durable/.
+  Every decision is posted to the run bus. Degrades safely if the local Qwen backend
+  is unreachable (skip-with-warning, no crash).
 
 PHASE 8 — PERSIST
   All learnings written to config.
@@ -994,14 +1019,17 @@ Before declaring complete, ALL must PASS:
 | 29 | CLAUDE.md points to this genesis file |
 | 30 | Full pipeline completes on a test document without crash |
 
-The implemented gate (`scripts/verify_session1.py`) runs **46** checks
+The implemented gate (`scripts/verify_session1.py`) runs **51** checks
 total, not 30: check 00 (`ast.parse` smoke over all modules) + checks
 1-30 above + checks 31-37 (Part XVIII Section F) + check 38 (embedding
-store build/query, Part XXI) + checks 39-45 (39-40 canonical inter-agent
+store build/query, Part XXI) + checks 39-50 (39-40 canonical inter-agent
 envelope + highest-revision, INFRA-037; 41-43 redaction rules + may_use_web
 enforcement + built-but-unwired sensitivity layer, INFRA-038; 44-45
 REDACT_CLERK kind/rule_id contract pins + structural redaction detection
-with no silent NONE). Arithmetic: 1 + 30 + 7 + 1 + 7 = 46.
+with no silent NONE; 46-47 redaction scrubs every operator-facing artifact +
+outcome verified by grep; 48 the three Qwen redactors share one resident
+model; 49 no silent default-rules floor; 50 deterministic authorized-only
+detection, language-neutral). Arithmetic: 1 + 30 + 7 + 1 + 12 = 51.
 
 Print the table with Status and Detail columns. ALL must be PASS.
 
