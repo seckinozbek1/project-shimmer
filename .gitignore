@@ -10,6 +10,11 @@ api_keys*/
 input/context/*.pdf
 input/operational/*.pdf
 input/conventions/*
+# Generated build artifact: BOOT regenerates config/convention_registry.json from
+# input/conventions/ on every run. The SOURCE is the tracked source of truth (see
+# the re-include below); this generated registry is ignored so the tree does not
+# re-dirty each run.
+config/convention_registry.json
 output/*
 output/**/*
 # Per-run output isolation (Part XXVII §A / INFRA-032): every run writes into its
@@ -53,3 +58,7 @@ durable/governance/sensitivity_overrides.jsonl
 # Re-includes (must come after the rules they negate)
 !scripts/guard_secrets.py
 !**/.gitkeep
+# The conventions framework is the tracked source of truth (operator-authored rules
+# that define what the system reviews and redacts); only this file is un-ignored
+# from input/conventions/*, the generated registry stays ignored above.
+!input/conventions/review_conventions.md
