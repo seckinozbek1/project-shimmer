@@ -763,6 +763,157 @@ def _category_for_conv(conv_id, registry):
     return None
 
 
+# ---------- EDITORIAL review house (INFRA-039) ----------------------------------------------
+# Privacy-free. Imports NOTHING from sensitivity_layer and reuses no privacy mechanic.
+# The single EDITOR agent gives an ADVISORY senior editorial review of the assembled
+# deliverable. It NEVER masks/detects/scrubs, NEVER modifies the master, and NEVER gates
+# shipping. No name here contains "redact" in any spelling.
+
+_EDITORIAL_VALID_VERDICTS = ("sound", "concern", "serious_concern")
+
+
+def _is_editorial_observation(it) -> bool:
+    """STRUCTURAL detection (INFRA-039 borrowed doctrine): an editorial observation is
+    recognized by carrying ref + verdict + rationale, regardless of any free-text label
+    (e.g. `kind`) the model attaches. The verdict VALUE is validated separately."""
+    if not isinstance(it, dict):
+        return False
+    has_ref = bool(str(it.get("ref", "")).strip())
+    has_verdict = bool(str(it.get("verdict", "")).strip())
+    has_rationale = bool(str(it.get("rationale", "")).strip())
+    return has_ref and has_verdict and has_rationale
+
+
+def _post_editorial(orch, doc_id, event, body):
+    """Post an auditable editorial-review event to the run bus (advisory; editorial house)."""
+    orch._post_orchestrator(
+        recipient="OPERATOR", channel="main", msg_type="INFORM",
+        body={"event": event, "document_id": doc_id, **body},
+        constitution_check={"laws_consulted": ["LAW-V"], "result": "RESOLVED",
+                            "resolution": "advisory editorial review of the assembled deliverable"})
+
+
+def _persist_editor_output(run_ctx, doc_id, payload) -> "str | None":
+    """Persist EDITOR's raw + parsed output on EVERY path (normal, all-sound,
+    failed-parse, skipped-sensitive), so the review is diagnosable from disk. Writes
+    into the run audit dir under editorial/. Best-effort; never raises."""
+    if run_ctx is None:
+        return None
+    try:
+        out_dir = run_ctx.audit_dir() / "editorial"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"EDITOR_{doc_id}.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(path)
+    except Exception:
+        return None
+
+
+def _append_editorial_to_deliverable(info, observations):
+    """Append an advisory EDITOR section to the existing per-agent __deliverable.md.
+    Does NOT touch the amendments master (advisory annotation only). Best-effort."""
+    p = info.get("per_agent_deliverable")
+    if not p or not Path(p).exists():
+        return
+    try:
+        lines = ["", "## EDITOR (advisory editorial review)", ""]
+        if not observations:
+            lines.append("_(no observations)_")
+        for it in observations:
+            lines.append(f"- **{it.get('verdict')}** [{it.get('ref')}]: {it.get('rationale')}")
+        with Path(p).open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except Exception:
+        pass
+
+
+def phase_6_5_editorial_review(orch, keys, op_docs, deliverables, run_ctx,
+                               convention_registry, *, run_is_non_sensitive):
+    """Phase 6.5 (EXECUTION ORDER: immediately after phase_6_synthesis, before phase 7
+    and before the phase 9 privacy scrub). The single EDITOR agent (Claude) gives an
+    ADVISORY senior editorial review of each CLEAN, pre-scrub assembled deliverable
+    master at <run>/deliverables/<doc_id>__amendments.json. EDITOR annotates only: it
+    never modifies the master and never gates shipping (INFRA-039).
+
+    Option-B sensitive-run gate: phase 6.5 is an API egress point for pre-scrub content,
+    so it runs ONLY when the run is declared non-sensitive (the --no-redaction-override
+    waiver is in force; same regime as record_redaction_waiver). On a run NOT declared
+    non-sensitive, EDITOR is SKIPPED and the skip is recorded LOUDLY. Sensitive-mode
+    editorial review is deferred until the LAW-IV masking layer is activated.
+
+    Safety doctrine: output that does not parse into items each carrying a VALID verdict
+    (sound|concern|serious_concern) is a LOUD 'editorial review failed' (advisory, so it
+    does NOT halt the pipeline and does NOT withhold the deliverable). A genuine
+    'no concerns' result is items each with verdict 'sound', DISTINCT from absent/malformed.
+    Raw output is persisted on EVERY path."""
+    summary = {}
+    if not run_is_non_sensitive:
+        note = "editorial review skipped: sensitive run, awaiting masking-layer activation"
+        for doc in op_docs:
+            _post_editorial(orch, doc["id"], "EDITORIAL_SKIPPED",
+                            {"reason": "sensitive_run", "note": note})
+            raw_path = _persist_editor_output(run_ctx, doc["id"],
+                                              {"state": "SKIPPED", "reason": "sensitive_run", "note": note})
+            summary[doc["id"]] = {"state": "SKIPPED", "reason": "sensitive_run",
+                                  "note": note, "raw_output_path": raw_path}
+        return summary
+    for doc in op_docs:
+        info = deliverables.get(doc["id"]) or {}
+        master_path = info.get("amendments_json")
+        if not master_path or not Path(master_path).exists():
+            summary[doc["id"]] = {"state": "NO_DELIVERABLE"}
+            continue
+        try:
+            # The CLEAN, pre-scrub master (phase 9 has not run yet).
+            master = json.loads(Path(master_path).read_text(encoding="utf-8"))
+        except Exception:
+            summary[doc["id"]] = {"state": "NO_DELIVERABLE"}
+            continue
+        editor = _build_wrapper("EDITOR", orch, keys)
+        result = editor.run_task(
+            work_payload={"task": "editorial_review", "document_id": doc["id"],
+                          "document_name": doc["name"],
+                          "amendments_master": master.get("amendments", [])},
+            run_objectives="Conduct a senior editorial review of the assembled deliverable's SUBSTANCE "
+                           "and DRAFTING: soundness, internal coherence, necessity, and the quality of the "
+                           "amendments and analysis. Emit ONE observation per item, each with: ref (what you "
+                           "comment on), verdict (EXACTLY one of 'sound', 'concern', 'serious_concern'), and "
+                           "rationale (your editorial reasoning in prose). If you have no concerns, emit one "
+                           "item with verdict 'sound'. You ANNOTATE only; you do NOT modify the deliverable "
+                           "and you do NOT mask, detect, or scrub anything.",
+            channel="main", max_tokens=2048,
+            convention_registry=convention_registry)
+        # Persist raw on EVERY path (success/all-sound/failed-parse).
+        raw_path = _persist_editor_output(run_ctx, doc["id"], {
+            "state": "RAW", "ok": result.get("ok"), "error": result.get("error"),
+            "parsed": result.get("parsed"), "raw_text": result.get("raw_text", "")})
+        # Silent-pass guard: must parse into observations each carrying a VALID verdict.
+        items = (decode_items(result.get("parsed"))
+                 if (result.get("ok") and is_envelope(result.get("parsed"))) else [])
+        obs = [it for it in items if _is_editorial_observation(it)]
+        valid = bool(obs) and all(
+            str(it.get("verdict", "")).strip().lower() in _EDITORIAL_VALID_VERDICTS for it in obs)
+        if not (result.get("ok") and valid):
+            # LOUD failure: the review did not complete. Advisory -> never halts, never
+            # withholds the deliverable; it flags the review as ABSENT, not silently empty.
+            _post_editorial(orch, doc["id"], "EDITORIAL_FAILED",
+                            {"reason": result.get("error") or "no valid editorial observation",
+                             "raw_output_path": raw_path})
+            summary[doc["id"]] = {"state": "FAILED",
+                                  "reason": result.get("error") or "no_valid_observation",
+                                  "raw_output_path": raw_path}
+            continue
+        # Success. all-'sound' is a GENUINE no-concerns review (distinct from absent).
+        all_sound = all(str(it.get("verdict", "")).strip().lower() == "sound" for it in obs)
+        _post_editorial(orch, doc["id"], "EDITORIAL_REVIEW",
+                        {"observations": len(obs), "all_sound": all_sound,
+                         "verdicts": [it.get("verdict") for it in obs]})
+        _append_editorial_to_deliverable(info, obs)  # advisory annotation; master untouched
+        summary[doc["id"]] = {"state": "REVIEWED", "observations": len(obs),
+                              "all_sound": all_sound, "raw_output_path": raw_path}
+    return summary
+
+
 def _render_amendments_md(doc, payload, registry, reference_index=None):
     """Back-compat wrapper. The canonical Markdown render now lives in
     amendment_render.render_amendments_md, a pure function of the master `payload`.
@@ -840,7 +991,8 @@ def _cost_projection(num_op_docs, num_ctx_docs):
     claude_calls = (len(PRODUCTION_AGENTS_PER_DOC) * num_op_docs
                     + len(PRODUCTION_AGENTS_CORPUS_LEVEL)
                     + len(CONVENTION_REVIEW_AGENTS) * num_op_docs  # style_guardian via Claude
-                    + num_op_docs)  # AMENDMENT_DRAFTER
+                    + num_op_docs  # AMENDMENT_DRAFTER
+                    + num_op_docs)  # EDITOR (phase 6.5; one advisory review per deliverable, non-sensitive runs only)
     gpt_calls = (len(AUDIT_AGENTS_PER_DOC) + 1) * num_op_docs  # +1 for PRACTICE_AUDITOR (gpt)
     return estimate_cost(claude_calls=claude_calls, claude_in=5500, claude_out=1800,
                          gpt_calls=gpt_calls, gpt_in=5500, gpt_out=1500)
@@ -1163,6 +1315,40 @@ def main(argv=None):
                   f"amendments={paths['amendment_count']}; "
                   f"validator_errors={len(paths['validator_errors'])}",
                   file=sys.stderr)
+
+        # Phase 6.5: EDITORIAL review (INFRA-039). Execution order: AFTER phase_6
+        # synthesis (the master is assembled), BEFORE phase 7 and BEFORE the phase 9
+        # privacy scrub, so EDITOR reads the CLEAN pre-scrub master. Advisory only:
+        # never modifies the master, never gates shipping. Option B: runs only on a
+        # run declared non-sensitive (the --no-redaction-override waiver in force, i.e.
+        # redaction is waived); otherwise EDITOR is skipped LOUDLY. Editorial house:
+        # no sensitivity_layer import, no privacy mechanic.
+        run_is_non_sensitive = not redaction_enabled  # waiver in force => declared non-sensitive
+        print(f"[pipeline] phase 6.5: editorial review"
+              f"{'' if run_is_non_sensitive else ' (SKIPPED: sensitive run, awaiting masking-layer activation)'}",
+              file=sys.stderr)
+        editorial_summary = phase_6_5_editorial_review(
+            orch, keys, op_docs, deliverables, run_ctx, conv_registry_dict,
+            run_is_non_sensitive=run_is_non_sensitive)
+
+        def _ed_count(*states):
+            return sum(1 for v in editorial_summary.values() if v.get("state") in states)
+        n_reviewed = _ed_count("REVIEWED")
+        n_ed_failed = _ed_count("FAILED")
+        n_ed_skipped = _ed_count("SKIPPED")
+        n_sound = sum(1 for v in editorial_summary.values()
+                      if v.get("state") == "REVIEWED" and v.get("all_sound"))
+        if not run_is_non_sensitive:
+            print(f"[pipeline] editorial review skipped: sensitive run, awaiting masking-layer "
+                  f"activation ({n_ed_skipped} deliverable(s))", file=sys.stderr)
+        else:
+            print(f"[pipeline] editorial: reviewed={n_reviewed} (all_sound={n_sound}) "
+                  f"FAILED={n_ed_failed} of {len(editorial_summary)} (advisory; never gates shipping)",
+                  file=sys.stderr)
+            if n_ed_failed:
+                failed_docs = [d for d, v in editorial_summary.items() if v.get("state") == "FAILED"]
+                print(f"[pipeline] editorial review failed (advisory, deliverable still ships): "
+                      f"{failed_docs}", file=sys.stderr)
 
         # Phase 7: audit synthesis + DELTA escalations
         synth = AuditSynthesizer(project_root=ROOT, bus=orch.bus, run_context=run_ctx)

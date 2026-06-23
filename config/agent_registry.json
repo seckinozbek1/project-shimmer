@@ -87,6 +87,13 @@
       ],
       "model": "claude-opus-4-8", "backend": "claude_api",
       "category": "amendment", "may_use_web": false, "may_handle_sensitive": false
+    },
+    "EDITOR": {
+      "does": ["Conduct senior editorial review of the assembled deliverable's substance and drafting (soundness, internal coherence, necessity, and the quality of the amendments and analysis)",
+                "Emit advisory editorial observations, one per item, each carrying a verdict and a prose rationale"],
+      "does_not": ["Modify the deliverable or the amendments master", "Gate whether the deliverable ships (advisory only)", "Mask, detect PII, or scrub (no privacy function)", "Use the web"],
+      "model": "claude-opus-4-8", "backend": "claude_api", "category": "editorial",
+      "may_use_web": false, "may_handle_sensitive": false
     }
   }
 }

@@ -139,6 +139,15 @@
         "ref_ids": "array of REF-* strings (all citations; >=1 required)"
       },
       "required": ["location", "convention_ref", "original_text", "action", "comment", "ref_ids"]
+    },
+    "EDITOR": {
+      "item_kind": "editorial_observation (one item per observation; items:[] means no editorial observations)",
+      "fields": {
+        "ref": "string (the REF-*/location/element this observation comments on)",
+        "verdict": "sound | concern | serious_concern (the ONLY permitted editorial verdicts; no other value is valid)",
+        "rationale": "string (the editorial reasoning, free-text prose)"
+      },
+      "required": ["ref", "verdict", "rationale"]
     }
   }
 }

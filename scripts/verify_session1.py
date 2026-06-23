@@ -49,7 +49,7 @@ EXPECTED_AGENTS = {
     "PROCESSOR", "VERIFIER", "FACT_CHECKER", "PRACTICE_AUDITOR", "LEGAL_ANALYST",
     "STYLE_GUARDIAN", "ARCHIVIST", "INST_FINDER", "CITATION_RESOLVER",
     "SPEECH_ACT_TAGGER", "REDACTOR",
-    "AMENDMENT_DRAFTER",
+    "AMENDMENT_DRAFTER", "EDITOR",
 }
 
 SEED_LAW_IDS = {"LAW-0", "LAW-I", "LAW-II", "LAW-III", "LAW-IV", "LAW-V", "LAW-VI"}
@@ -138,7 +138,7 @@ def check_03_agent_registry():
     for name, spec in agents.items():
         for k in ("does", "does_not", "model"):
             if k not in spec: return _fail(f"{name} missing {k!r}")
-    return _ok(f"{len(agents)} agents with DOES/DOES NOT/model (12 incl. AMENDMENT_DRAFTER)")
+    return _ok(f"{len(agents)} agents with DOES/DOES NOT/model (13 incl. AMENDMENT_DRAFTER + EDITOR)")
 
 
 def check_04_contracts():
@@ -857,7 +857,7 @@ def check_38_embedding_store():
 
 def check_39_canonical_envelope():
     """INFRA-037: every agent's output payload is the canonical wrapper
-    {agent, doc_id, items:[flat items]}. For ALL 12 agents, a valid wrapper of one
+    {agent, doc_id, items:[flat items]}. For ALL 13 agents, a valid wrapper of one
     flat core-bearing item validates; a bare list, a bare dict, and an item with a
     nested object are all rejected; an empty items list is valid."""
     from agent_wrapper import AgentWrapper, is_envelope, decode_items
@@ -893,7 +893,7 @@ def check_39_canonical_envelope():
     _, m_empty = w.parse_contract_output(json.dumps({"agent": name, "doc_id": "d", "items": []}))
     bus_path.unlink(missing_ok=True)
     if m_empty: return _fail(f"empty items rejected: {m_empty}")
-    return _ok("all 12 agents enforce the canonical wrapper of flat core-bearing items")
+    return _ok("all 13 agents enforce the canonical wrapper of flat core-bearing items")
 
 
 def check_40_highest_revision():
@@ -1290,6 +1290,84 @@ def check_50_deterministic_detection_language_neutral():
     return _ok("deterministic detection authorized-only, canonical, merged/de-duped, DATA-driven, no literals/network")
 
 
+def check_51_editorial_structural():
+    """INFRA-039: EDITOR is the privacy-free editorial reviewer. Its registry entry is
+    claude_api / category editorial / web+sensitive both false; its contract constrains
+    verdict to EXACTLY {sound, concern, serious_concern} and requires ref+verdict+
+    rationale; its worked example is a valid INFRA-037 envelope carrying a verdict in the
+    set; the structural detector recognizes ref+verdict+rationale; and nothing about
+    EDITOR contains 'redact' in any spelling (editorial house is redaction-free)."""
+    reg = json.loads((CONFIG / "agent_registry.json").read_text(encoding="utf-8"))["agents"]
+    con = json.loads((CONFIG / "agent_contracts.json").read_text(encoding="utf-8"))["contracts"]
+    if "EDITOR" not in reg or "EDITOR" not in con:
+        return _fail("EDITOR missing from registry/contracts")
+    spec = reg["EDITOR"]
+    if spec.get("backend") != "claude_api" or spec.get("category") != "editorial":
+        return _fail("EDITOR must be backend claude_api / category editorial")
+    if spec.get("may_use_web") or spec.get("may_handle_sensitive"):
+        return _fail("EDITOR must be may_use_web false and may_handle_sensitive false (privacy-free)")
+    c = con["EDITOR"]
+    vfield = str(c.get("fields", {}).get("verdict", "")).lower()
+    for v in ("sound", "concern", "serious_concern"):
+        if v not in vfield:
+            return _fail(f"EDITOR contract verdict field does not document '{v}'")
+    if not {"ref", "verdict", "rationale"} <= set(c.get("required", [])):
+        return _fail("EDITOR contract required must include ref, verdict, rationale")
+    # worked example: valid canonical envelope, verdict in the set, redaction-free
+    from agent_wrapper import AgentWrapper, is_envelope, decode_items
+    class _S: pass
+    s = _S(); s.name = "EDITOR"; s.contract = {"fields": {}, "required": []}
+    s._worked_item_example = AgentWrapper._worked_item_example.__get__(s)
+    ex = s._worked_item_example()
+    if "redact" in ex.lower():
+        return _fail("EDITOR worked example contains 'redact' (editorial house must be redaction-free)")
+    obj = json.loads(ex)
+    if not is_envelope(obj):
+        return _fail("EDITOR worked example is not the canonical INFRA-037 envelope")
+    its = decode_items(obj)
+    if not its or str(its[0].get("verdict", "")).lower() not in ("sound", "concern", "serious_concern"):
+        return _fail("EDITOR worked example verdict is not in the valid set")
+    # runtime structural detector + valid-verdict set (editorial house, no privacy mechanic)
+    from pipeline import _is_editorial_observation, _EDITORIAL_VALID_VERDICTS
+    if set(_EDITORIAL_VALID_VERDICTS) != {"sound", "concern", "serious_concern"}:
+        return _fail("editorial valid-verdict set is not exactly {sound, concern, serious_concern}")
+    if not _is_editorial_observation({"ref": "REF-1", "verdict": "concern", "rationale": "x"}):
+        return _fail("structural detection missed a ref+verdict+rationale observation")
+    if _is_editorial_observation({"ref": "R", "verdict": "concern"}):
+        return _fail("structural detection accepted an observation missing rationale")
+    import inspect
+    from pipeline import phase_6_5_editorial_review
+    if "sensitivity_layer" in inspect.getsource(phase_6_5_editorial_review):
+        return _fail("editorial phase references sensitivity_layer (must reuse no privacy mechanic)")
+    return _ok("EDITOR privacy-free; verdict constrained to {sound,concern,serious_concern}; envelope+example valid; redaction-free")
+
+
+def check_52_editorial_ordering():
+    """INFRA-039 ordering guarantee: EDITOR (phase 6.5) runs in execution order AFTER
+    phase_6_synthesis (which runs AMENDMENT_DRAFTER, the last editorial producer) and
+    BEFORE phase 7 and BEFORE the phase 9 privacy scrub, reading the CLEAN pre-scrub
+    master. Enforced by source-order introspection of pipeline.main plus the editorial
+    phase reading the assembled master and never mutating/scrubbing it (advisory only)."""
+    import inspect
+    import pipeline
+    src = inspect.getsource(pipeline.main)
+    i_syn = src.find("phase_6_synthesis(")
+    i_ed = src.find("phase_6_5_editorial_review(")
+    i_red = src.find("run_redaction_phase(")
+    if not (0 <= i_syn < i_ed < i_red):
+        return _fail(f"execution order wrong: synthesis={i_syn} editorial={i_ed} redaction={i_red} "
+                     f"(must be synthesis < editorial < redaction)")
+    esrc = inspect.getsource(pipeline.phase_6_5_editorial_review)
+    if "amendments_json" not in esrc or "read_text" not in esrc:
+        return _fail("editorial phase does not read the assembled master (pre-scrub)")
+    # Advisory: the editorial phase must not MUTATE the master (the privacy scrub does
+    # master.clear()/master.update(); the editorial phase must do neither, and must not
+    # write the master file). Checked on real mutation patterns, not on docstring words.
+    if "master.clear" in esrc or "master.update" in esrc or ".write_text" in esrc:
+        return _fail("editorial phase mutates the master (must be advisory: clean read, no master write)")
+    return _ok("EDITOR ordered after synthesis (AMENDMENT_DRAFTER) and before phase 7 + phase 9 scrub; reads clean master; advisory")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -1303,7 +1381,7 @@ CHECKS = [
     ("00 ast.parse on all modules", ast_parse_all_modules),
     ("01 Directory structure", check_01_directory),
     ("02 constitution.json has 7 seed laws", check_02_constitution),
-    ("03 agent_registry.json has 12 agents", check_03_agent_registry),
+    ("03 agent_registry.json has 13 agents", check_03_agent_registry),
     ("04 agent_contracts.json has schemas", check_04_contracts),
     ("05 constitution.check() against 4 layers", check_05_constitution_check),
     ("06 match_tf_law() returns confidence", check_06_match_tf_law),
@@ -1351,6 +1429,8 @@ CHECKS = [
     ("48 qwen_local shares one resident model per model_id", check_48_qwen_shared_model_cache),
     ("49 no silent default redaction floor (operator-sovereignty)", check_49_no_silent_default_floor),
     ("50 deterministic detection, authorized-only + language-neutral", check_50_deterministic_detection_language_neutral),
+    ("51 EDITOR editorial structural (verdict set, envelope, redaction-free)", check_51_editorial_structural),
+    ("52 EDITOR ordering: after AMENDMENT_DRAFTER, before phase 9 scrub (clean master)", check_52_editorial_ordering),
 ]
 
 
