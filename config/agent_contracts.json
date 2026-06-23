@@ -113,31 +113,16 @@
       },
       "required": ["utterance_id", "speech_act"]
     },
-    "REDACT_CLERK": {
+    "REDACTOR": {
       "item_kind": "redaction (one item per proposed redaction; items:[] means nothing to redact)",
       "fields": {
         "kind": "redaction (REQUIRED value — every redaction item MUST set kind=\"redaction\", never \"finding\")",
-        "segment_id": "string", "tier": "T1 | T2",
+        "segment_id": "string",
         "span": "string (the exact text to redact, verbatim)", "category": "string (the matched rule's category, verbatim)",
         "replacement": "string (the replacement token, e.g. [REDACTED])", "method": "string (REDACT)",
         "rule_id": "string (the id of the operator/default rule that matched this span, e.g. CONV-006 or RED-DFLT-001)"
       },
       "required": ["span", "category"]
-    },
-    "REDACT_AUTHORITY": {
-      "item_kind": "approval (one item per redaction decision)",
-      "fields": {
-        "segment_id": "string", "tier": "T3 | T4",
-        "approved": "boolean", "adversarial_test_passed": "boolean", "issues": "array of strings"
-      },
-      "required": ["approved", "adversarial_test_passed"]
-    },
-    "REDACT_GATE": {
-      "item_kind": "gate (one item: the final binary verdict)",
-      "fields": {
-        "deliverable_id": "string", "tier": "T5", "pass": "boolean", "reason": "string (optional justification; logged for audit, not a BLOCK trigger)"
-      },
-      "required": ["pass"]
     },
     "AMENDMENT_DRAFTER": {
       "item_kind": "amendment (one item per amendment)",

@@ -35,12 +35,12 @@ from message_bus import MessageBus
 _GPT_SEMAPHORE = threading.Semaphore(2)
 
 # Shared resident local-model cache (qwen_local). A 4-bit 7B is several GB
-# resident; loading one per agent meant the three redactors (REDACT_CLERK ->
-# REDACT_AUTHORITY -> REDACT_GATE, all the SAME model_id) tried to hold three
-# copies and the third load failed (the redactor_unavailable that broke the
-# ladder). Key by model_id so the first qwen_local call loads once and every
-# later wrapper with that model_id REUSES the resident instance. This changes
-# only HOW the model loads, never WHAT it does (LAW-IV: still fully local).
+# resident; loading a fresh copy per qwen_local call meant multiple agents on the
+# SAME model_id tried to hold several copies and a later load failed (the
+# redactor_unavailable that broke the old tier ladder). Key by model_id so the
+# first qwen_local call loads once and every later wrapper with that model_id
+# REUSES the resident instance. This changes only HOW the model loads, never WHAT
+# it does (LAW-IV: still fully local).
 _QWEN_MODELS: dict = {}                 # model_id -> (tokenizer, model)
 _QWEN_LOAD_LOCK = threading.Lock()      # guards first-load so a concurrent first call cannot double-load
 
@@ -659,11 +659,11 @@ class AgentWrapper:
         )
 
     def _worked_item_example(self) -> str:
-        """A per-agent worked one-item example. REDACT_CLERK gets a REDACTION-shaped
+        """A per-agent worked one-item example. REDACTOR gets a REDACTION-shaped
         example (kind='redaction') so the generic 'finding' example never seeds it
         (that bleed caused valid redactions to be tagged kind='finding' and dropped)."""
-        if self.name == "REDACT_CLERK":
-            return ('{"agent": "REDACT_CLERK", "doc_id": "<id>", "items": ['
+        if self.name == "REDACTOR":
+            return ('{"agent": "REDACTOR", "doc_id": "<id>", "items": ['
                     '{"ref": "REF-0006", "kind": "redaction", "confidence": "CONFIDENT", '
                     '"span": "<exact text to redact, verbatim>", "category": "<the matched rule\'s category>", '
                     '"replacement": "[REDACTED]", "method": "REDACT", '

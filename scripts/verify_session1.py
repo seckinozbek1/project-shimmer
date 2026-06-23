@@ -48,7 +48,7 @@ REQUIRED_DIRS = [
 EXPECTED_AGENTS = {
     "PROCESSOR", "VERIFIER", "FACT_CHECKER", "PRACTICE_AUDITOR", "LEGAL_ANALYST",
     "STYLE_GUARDIAN", "ARCHIVIST", "INST_FINDER", "CITATION_RESOLVER",
-    "SPEECH_ACT_TAGGER", "REDACT_CLERK", "REDACT_AUTHORITY", "REDACT_GATE",
+    "SPEECH_ACT_TAGGER", "REDACTOR",
     "AMENDMENT_DRAFTER",
 }
 
@@ -138,7 +138,7 @@ def check_03_agent_registry():
     for name, spec in agents.items():
         for k in ("does", "does_not", "model"):
             if k not in spec: return _fail(f"{name} missing {k!r}")
-    return _ok(f"{len(agents)} agents with DOES/DOES NOT/model (14 incl. AMENDMENT_DRAFTER)")
+    return _ok(f"{len(agents)} agents with DOES/DOES NOT/model (12 incl. AMENDMENT_DRAFTER)")
 
 
 def check_04_contracts():
@@ -857,7 +857,7 @@ def check_38_embedding_store():
 
 def check_39_canonical_envelope():
     """INFRA-037: every agent's output payload is the canonical wrapper
-    {agent, doc_id, items:[flat items]}. For ALL 14 agents, a valid wrapper of one
+    {agent, doc_id, items:[flat items]}. For ALL 12 agents, a valid wrapper of one
     flat core-bearing item validates; a bare list, a bare dict, and an item with a
     nested object are all rejected; an empty items list is valid."""
     from agent_wrapper import AgentWrapper, is_envelope, decode_items
@@ -893,7 +893,7 @@ def check_39_canonical_envelope():
     _, m_empty = w.parse_contract_output(json.dumps({"agent": name, "doc_id": "d", "items": []}))
     bus_path.unlink(missing_ok=True)
     if m_empty: return _fail(f"empty items rejected: {m_empty}")
-    return _ok("all 14 agents enforce the canonical wrapper of flat core-bearing items")
+    return _ok("all 12 agents enforce the canonical wrapper of flat core-bearing items")
 
 
 def check_40_highest_revision():
@@ -962,13 +962,13 @@ def check_42_may_use_web_enforced():
     can never be routed to the web."""
     from search_router import SearchRouter, agent_may_use_web
     registry = json.loads((CONFIG / "agent_registry.json").read_text())["agents"]
-    if agent_may_use_web(registry, "REDACT_CLERK"):
-        return _fail("REDACT_CLERK must not have may_use_web")
+    if agent_may_use_web(registry, "REDACTOR"):
+        return _fail("REDACTOR must not have may_use_web")
     if not agent_may_use_web(registry, "FACT_CHECKER"):
         return _fail("FACT_CHECKER should have may_use_web")
     r = SearchRouter.open(ROOT)
     try:
-        r.search("x", agent="REDACT_CLERK")
+        r.search("x", agent="REDACTOR")
         return _fail("non-web agent was NOT refused at the search boundary")
     except PermissionError:
         pass
@@ -992,8 +992,8 @@ def check_43_sensitivity_layer_gate():
         return _fail("inactive masking hook must be a pass-through")
     # dormant routing predicate reads the registry flag
     registry = json.loads((CONFIG / "agent_registry.json").read_text())["agents"]
-    if not sensitivity_layer.may_handle_sensitive(registry, "REDACT_CLERK"):
-        return _fail("REDACT_CLERK should be may_handle_sensitive (dormant on-switch)")
+    if not sensitivity_layer.may_handle_sensitive(registry, "REDACTOR"):
+        return _fail("REDACTOR should be may_handle_sensitive (dormant on-switch)")
     if sensitivity_layer.may_handle_sensitive(registry, "PROCESSOR"):
         return _fail("PROCESSOR should not be may_handle_sensitive")
     # logged override writes to the governance ledger (write to a throwaway run root)
@@ -1008,40 +1008,41 @@ def check_43_sensitivity_layer_gate():
     return _ok("sensitivity layer inactive; inert masking + dormant routing; override logged to ledger")
 
 
-def check_44_redaction_clerk_contract_pins():
-    """Redaction silent-pass fix: the REDACT_CLERK contract pins kind=redaction and
+def check_44_redactor_contract_pins():
+    """Redaction silent-pass fix: the REDACTOR contract pins kind=redaction and
     carries a rule_id attribution field, and the per-agent worked example is
     redaction-shaped (not the generic kind='finding' example that bled in)."""
     contracts = json.loads((CONFIG / "agent_contracts.json").read_text(encoding="utf-8"))["contracts"]
-    c = contracts.get("REDACT_CLERK", {})
+    c = contracts.get("REDACTOR", {})
     if not str(c.get("item_kind", "")).strip().lower().startswith("redaction"):
-        return _fail("REDACT_CLERK item_kind does not pin 'redaction'")
+        return _fail("REDACTOR item_kind does not pin 'redaction'")
     fields = c.get("fields", {})
     if "rule_id" not in fields:
-        return _fail("REDACT_CLERK contract has no rule_id attribution field")
+        return _fail("REDACTOR contract has no rule_id attribution field")
     if "redaction" not in str(fields.get("kind", "")).lower():
-        return _fail("REDACT_CLERK contract field 'kind' does not pin the value redaction")
+        return _fail("REDACTOR contract field 'kind' does not pin the value redaction")
     # the worked example the clerk actually receives must be redaction-shaped
     from agent_wrapper import AgentWrapper
     class _S: pass
-    s = _S(); s.name = "REDACT_CLERK"; s.contract = {"fields": {}, "required": []}
+    s = _S(); s.name = "REDACTOR"; s.contract = {"fields": {}, "required": []}
     s._worked_item_example = AgentWrapper._worked_item_example.__get__(s)
     ex = s._worked_item_example()
     if '"kind": "redaction"' not in ex or "rule_id" not in ex:
-        return _fail("REDACT_CLERK worked example is not redaction-shaped (kind=redaction + rule_id)")
+        return _fail("REDACTOR worked example is not redaction-shaped (kind=redaction + rule_id)")
     # a non-redaction agent still gets the generic finding example
     s2 = _S(); s2.name = "FACT_CHECKER"; s2.contract = {"fields": {}, "required": []}
     s2._worked_item_example = AgentWrapper._worked_item_example.__get__(s2)
     if '"kind": "finding"' not in s2._worked_item_example():
         return _fail("non-redaction agent lost its finding example")
-    return _ok("REDACT_CLERK pins kind=redaction + rule_id; worked example is redaction-shaped")
+    return _ok("REDACTOR pins kind=redaction + rule_id; worked example is redaction-shaped")
 
 
 def check_45_redaction_structural_no_silent_none():
     """Redaction silent-pass fix: phase_9 detects redactions STRUCTURALLY (span +
     replacement/method/redaction-category), not by the kind tag alone, and never
     silently resolves a non-empty-but-unresolved clerk result to NONE."""
-    from pipeline import _is_redaction_proposal, _classify_clerk_items, _norm_redaction_category
+    from sensitivity_layer.redaction_stage import (_is_redaction_proposal,
+        _classify_redactor_items, _norm_redaction_category)
     # the exact rehearsal failure: a real redaction MIS-TAGGED kind='finding' is detected
     mistag = {"kind": "finding", "span": "رقم الهوية 0000-1111-2222", "category": "confidentiality",
               "replacement": "[REDACTED]", "method": "REDACT", "rule_id": "CONV-006"}
@@ -1051,11 +1052,11 @@ def check_45_redaction_structural_no_silent_none():
     if _is_redaction_proposal({"kind": "finding", "ref": "R", "reasoning": "x"}):
         return _fail("a non-redaction finding was treated as a redaction")
     # classify: empty -> NONE; non-empty-unresolved -> BLOCK; mis-tagged -> PROPOSE
-    if _classify_clerk_items([])[0] != "NONE":
+    if _classify_redactor_items([])[0] != "NONE":
         return _fail("empty items must be a legitimate NONE")
-    if _classify_clerk_items([{"kind": "finding", "ref": "R"}])[0] != "BLOCK":
+    if _classify_redactor_items([{"kind": "finding", "ref": "R"}])[0] != "BLOCK":
         return _fail("non-empty-but-unresolved must BLOCK, never silent NONE")
-    outcome, reds = _classify_clerk_items([mistag])
+    outcome, reds = _classify_redactor_items([mistag])
     if outcome != "PROPOSE" or not reds:
         return _fail("a structurally-valid redaction did not resolve to PROPOSE")
     # category normalized: conv-confidentiality == confidentiality
@@ -1074,7 +1075,8 @@ def check_46_redaction_applies_to_all_artifacts():
     import inspect
     from sensitivity_layer.scrub import (_sub_span, _count_span, _redact_obj,
                                          _apply_redactions_to_master, scrub_text_artifacts_and_verify)
-    from pipeline import phase_9_redaction
+    from sensitivity_layer.redaction_stage import run_redaction_phase
+    import pipeline
     # (C) the EXACT paid-run mismatch: clerk merged span vs document text with the
     # ال prefix and the "، رقم الهوية" connective between name and id.
     clerk_span = "سيد/ خالد المنصور 0000-1111-2222"
@@ -1095,16 +1097,34 @@ def check_46_redaction_applies_to_all_artifacts():
     if nn < 2 or "الواحة القابضة" in json.dumps(sm, ensure_ascii=False):
         return _fail("master scrub did not cover all string leaves (defect A on master)")
     _apply_redactions_to_master(master, [{"span": "x"}])  # smoke: in-place, no raise
-    # (A-artifacts) shape (a) split: the privacy verify targets the INDEPENDENT text
-    # artifacts; the pipeline (phase_9) re-renders the master deliverable on the
-    # editorial side (write_amendment_deliverables). Both halves are asserted.
+    # (A-artifacts) shape (a) split (1c relocation): the privacy verify targets the
+    # INDEPENDENT text artifacts; the editorial RENDER stays pipeline-side and is
+    # injected into the relocated privacy stage as the render_deliverable callback.
+    # Assert (i) the privacy verify still targets every artifact, (ii) the relocated
+    # stage invokes the injected render callback between produce and verify, and
+    # (iii) the pipeline wires write_amendment_deliverables as that callback. So the
+    # render is editorial-side and there is no privacy->editorial edge.
     vsrc = inspect.getsource(scrub_text_artifacts_and_verify)
     for key in ("per_agent_deliverable", "context_summary", "operative_summary"):
         if key not in vsrc:
             return _fail(f"verify path does not target {key} (defect A: master-only apply)")
-    if "write_amendment_deliverables" not in inspect.getsource(phase_9_redaction):
-        return _fail("pipeline no longer re-renders the master deliverable after scrub")
-    return _ok("approved spans scrubbed from every artifact; normalized matcher locates ال+connective spans")
+    if "render_deliverable(" not in inspect.getsource(run_redaction_phase):
+        return _fail("relocated stage no longer invokes the injected render callback")
+    # the real edge test: the privacy stage MODULE must not import the editorial
+    # render/pipeline (a comment mention is fine; an import is the forbidden edge).
+    import ast as _ast
+    from sensitivity_layer import redaction_stage as _stage_mod
+    _imports = set()
+    for _n in _ast.walk(_ast.parse(inspect.getsource(_stage_mod))):
+        if isinstance(_n, _ast.Import):
+            _imports.update(a.name.split(".")[0] for a in _n.names)
+        elif isinstance(_n, _ast.ImportFrom) and _n.module:
+            _imports.add(_n.module.split(".")[0])
+    if {"amendment_render", "pipeline"} & _imports:
+        return _fail("privacy stage imports editorial render/pipeline (privacy->editorial edge)")
+    if "write_amendment_deliverables" not in inspect.getsource(pipeline):
+        return _fail("pipeline no longer wires write_amendment_deliverables as the render callback")
+    return _ok("approved spans scrubbed from every artifact; render stays editorial via injected callback (no privacy->editorial edge)")
 
 
 def check_47_redaction_outcome_verified():
@@ -1113,7 +1133,7 @@ def check_47_redaction_outcome_verified():
     not proposal-based, and a span located NOWHERE BLOCKS rather than silently
     zero-matching."""
     from sensitivity_layer.scrub import _redaction_outcome
-    from pipeline import (build_redaction_escalation,
+    from sensitivity_layer.redaction_stage import (build_redaction_escalation,
                           _REDACTION_FAILURE, _REDACTION_PUBLIC_KINDS)
     reds = [{"span": "خالد المنصور", "replacement": "[REDACTED]"},
             {"span": "0000-1111-2222", "replacement": "[REDACTED]"}]
@@ -1150,8 +1170,9 @@ def check_47_redaction_outcome_verified():
 
 def check_48_qwen_shared_model_cache():
     """Shared local-model load: qwen_local agents reuse ONE resident instance per
-    model_id (the three redactors share a single 7B instead of loading three, which
-    is what broke the ladder). Verifies the cache returns the SAME object on repeat
+    model_id (multiple qwen_local agents on the same model_id share a single 7B
+    instead of each loading its own, which is what broke the old tier ladder).
+    Verifies the cache returns the SAME object on repeat
     and that call_qwen routes through the shared loader — without loading a real 7B."""
     import inspect
     from agent_wrapper import _load_qwen, _QWEN_MODELS, _QWEN_LOAD_LOCK, AgentWrapper
@@ -1185,7 +1206,7 @@ def check_49_no_silent_default_floor():
     built-in ruleset applies ONLY on conscious opt-in; the no_operator_rule BLOCK is
     wired and operator-visible."""
     from sensitivity_layer import redaction_rules, DEFAULT_REDACTION_RULES
-    from pipeline import _REDACTION_FAILURE, _REDACTION_PUBLIC_KINDS, build_redaction_escalation
+    from sensitivity_layer.redaction_stage import _REDACTION_FAILURE, _REDACTION_PUBLIC_KINDS, build_redaction_escalation
     op_reg = {"conventions": [{"id": "CONV-X", "category": "conv-confidentiality", "action": "flag",
               "rule": "must not contain an individual's identity number or turnover figures"}]}
     rr = redaction_rules(op_reg)
@@ -1269,50 +1290,6 @@ def check_50_deterministic_detection_language_neutral():
     return _ok("deterministic detection authorized-only, canonical, merged/de-duped, DATA-driven, no literals/network")
 
 
-def check_51_adversarial_test_enforced():
-    """Baseline cleanup before Stage 3b: REDACT_AUTHORITY's adversarial_test_passed
-    is now ENFORCED (its value is read, not just its presence), with THREE distinct
-    cases; and REDACT_GATE.reason is RELAXED from required to optional (pass stays the
-    safety verdict). Exercises the pure decision helper pipeline._classify_adversarial
-    and the escalation taxonomy; non-mutating, no model call."""
-    from pipeline import (_classify_adversarial, build_redaction_escalation,
-                          _REDACTION_PUBLIC_KINDS)
-    # (ii) approved AND adversarial True -> proceed (no block).
-    approved, blk = _classify_adversarial([{"approved": True, "adversarial_test_passed": True}])
-    if not (approved is True and blk is None):
-        return _fail(f"approved+test-passed should proceed, got approved={approved} block={blk!r}")
-    # (iii) approved AND adversarial False -> adversarial_test_failed BLOCK (distinct).
-    approved, blk = _classify_adversarial([{"approved": True, "adversarial_test_passed": False}])
-    if blk != "adversarial_test_failed":
-        return _fail(f"approved+test-failed should BLOCK adversarial_test_failed, got {blk!r}")
-    # (i) malformed value (present but not a clean boolean) -> contract_violation_fields,
-    # kept DISTINCT from a genuine failed test.
-    _, blk = _classify_adversarial([{"approved": True, "adversarial_test_passed": None}])
-    if blk != "contract_violation_fields":
-        return _fail(f"malformed adversarial value should be contract_violation_fields, got {blk!r}")
-    # adversarial_test_failed surfaces under its OWN name (not collapsed to contract_violation).
-    esc = build_redaction_escalation(doc_id="d", document_name="n", stage="REDACT_AUTHORITY",
-                                     failure_kind="adversarial_test_failed", raw_output_path=None)
-    if esc["failure_kind"] != "adversarial_test_failed":
-        return _fail(f"adversarial_test_failed collapsed to {esc['failure_kind']!r}")
-    if "adversarial_test_failed" not in _REDACTION_PUBLIC_KINDS:
-        return _fail("adversarial_test_failed not in the public failure-kind set")
-    # (iii-missing) a MISSING field still routes to the contract_violation BLOCK: the
-    # field stays contract-required, so its absence is caught upstream by the parser.
-    contracts = json.loads((CONFIG / "agent_contracts.json").read_text(encoding="utf-8"))
-    auth_req = set(contracts["contracts"]["REDACT_AUTHORITY"].get("required", []))
-    if "adversarial_test_passed" not in auth_req:
-        return _fail("REDACT_AUTHORITY must still require adversarial_test_passed (missing -> contract_violation)")
-    # REDACT_GATE.reason relaxed to optional; pass remains the required safety verdict.
-    gate_req = set(contracts["contracts"]["REDACT_GATE"].get("required", []))
-    if "reason" in gate_req:
-        return _fail("REDACT_GATE.reason should be relaxed out of required")
-    if "pass" not in gate_req:
-        return _fail("REDACT_GATE.pass must remain required (the safety verdict)")
-    return _ok("adversarial test enforced (proceed / adversarial_test_failed / contract_violation distinct); "
-               "missing field still contract_violation; GATE.reason relaxed, pass required")
-
-
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -1326,7 +1303,7 @@ CHECKS = [
     ("00 ast.parse on all modules", ast_parse_all_modules),
     ("01 Directory structure", check_01_directory),
     ("02 constitution.json has 7 seed laws", check_02_constitution),
-    ("03 agent_registry.json has 14 agents", check_03_agent_registry),
+    ("03 agent_registry.json has 12 agents", check_03_agent_registry),
     ("04 agent_contracts.json has schemas", check_04_contracts),
     ("05 constitution.check() against 4 layers", check_05_constitution_check),
     ("06 match_tf_law() returns confidence", check_06_match_tf_law),
@@ -1367,14 +1344,13 @@ CHECKS = [
     ("41 conventions compile to operator redaction rules (INFRA-038)", check_41_redaction_rules),
     ("42 may_use_web enforced at search boundary (INFRA-038)", check_42_may_use_web_enforced),
     ("43 sensitivity layer built-but-inactive + logged override (INFRA-038)", check_43_sensitivity_layer_gate),
-    ("44 REDACT_CLERK contract pins kind=redaction + rule_id", check_44_redaction_clerk_contract_pins),
+    ("44 REDACTOR contract pins kind=redaction + rule_id", check_44_redactor_contract_pins),
     ("45 redaction detected structurally; no silent NONE", check_45_redaction_structural_no_silent_none),
     ("46 redaction scrubs ALL artifacts + normalized matching", check_46_redaction_applies_to_all_artifacts),
     ("47 redaction outcome verified (survivor BLOCKS; span counts)", check_47_redaction_outcome_verified),
     ("48 qwen_local shares one resident model per model_id", check_48_qwen_shared_model_cache),
     ("49 no silent default redaction floor (operator-sovereignty)", check_49_no_silent_default_floor),
     ("50 deterministic detection, authorized-only + language-neutral", check_50_deterministic_detection_language_neutral),
-    ("51 adversarial test enforced; GATE.reason relaxed (baseline pre-3b)", check_51_adversarial_test_enforced),
 ]
 
 
