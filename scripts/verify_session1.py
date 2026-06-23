@@ -1264,6 +1264,50 @@ def check_50_deterministic_detection_language_neutral():
     return _ok("deterministic detection authorized-only, canonical, merged/de-duped, DATA-driven, no literals/network")
 
 
+def check_51_adversarial_test_enforced():
+    """Baseline cleanup before Stage 3b: REDACT_AUTHORITY's adversarial_test_passed
+    is now ENFORCED (its value is read, not just its presence), with THREE distinct
+    cases; and REDACT_GATE.reason is RELAXED from required to optional (pass stays the
+    safety verdict). Exercises the pure decision helper pipeline._classify_adversarial
+    and the escalation taxonomy; non-mutating, no model call."""
+    from pipeline import (_classify_adversarial, build_redaction_escalation,
+                          _REDACTION_PUBLIC_KINDS)
+    # (ii) approved AND adversarial True -> proceed (no block).
+    approved, blk = _classify_adversarial([{"approved": True, "adversarial_test_passed": True}])
+    if not (approved is True and blk is None):
+        return _fail(f"approved+test-passed should proceed, got approved={approved} block={blk!r}")
+    # (iii) approved AND adversarial False -> adversarial_test_failed BLOCK (distinct).
+    approved, blk = _classify_adversarial([{"approved": True, "adversarial_test_passed": False}])
+    if blk != "adversarial_test_failed":
+        return _fail(f"approved+test-failed should BLOCK adversarial_test_failed, got {blk!r}")
+    # (i) malformed value (present but not a clean boolean) -> contract_violation_fields,
+    # kept DISTINCT from a genuine failed test.
+    _, blk = _classify_adversarial([{"approved": True, "adversarial_test_passed": None}])
+    if blk != "contract_violation_fields":
+        return _fail(f"malformed adversarial value should be contract_violation_fields, got {blk!r}")
+    # adversarial_test_failed surfaces under its OWN name (not collapsed to contract_violation).
+    esc = build_redaction_escalation(doc_id="d", document_name="n", stage="REDACT_AUTHORITY",
+                                     failure_kind="adversarial_test_failed", raw_output_path=None)
+    if esc["failure_kind"] != "adversarial_test_failed":
+        return _fail(f"adversarial_test_failed collapsed to {esc['failure_kind']!r}")
+    if "adversarial_test_failed" not in _REDACTION_PUBLIC_KINDS:
+        return _fail("adversarial_test_failed not in the public failure-kind set")
+    # (iii-missing) a MISSING field still routes to the contract_violation BLOCK: the
+    # field stays contract-required, so its absence is caught upstream by the parser.
+    contracts = json.loads((CONFIG / "agent_contracts.json").read_text(encoding="utf-8"))
+    auth_req = set(contracts["contracts"]["REDACT_AUTHORITY"].get("required", []))
+    if "adversarial_test_passed" not in auth_req:
+        return _fail("REDACT_AUTHORITY must still require adversarial_test_passed (missing -> contract_violation)")
+    # REDACT_GATE.reason relaxed to optional; pass remains the required safety verdict.
+    gate_req = set(contracts["contracts"]["REDACT_GATE"].get("required", []))
+    if "reason" in gate_req:
+        return _fail("REDACT_GATE.reason should be relaxed out of required")
+    if "pass" not in gate_req:
+        return _fail("REDACT_GATE.pass must remain required (the safety verdict)")
+    return _ok("adversarial test enforced (proceed / adversarial_test_failed / contract_violation distinct); "
+               "missing field still contract_violation; GATE.reason relaxed, pass required")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -1325,6 +1369,7 @@ CHECKS = [
     ("48 qwen_local shares one resident model per model_id", check_48_qwen_shared_model_cache),
     ("49 no silent default redaction floor (operator-sovereignty)", check_49_no_silent_default_floor),
     ("50 deterministic detection, authorized-only + language-neutral", check_50_deterministic_detection_language_neutral),
+    ("51 adversarial test enforced; GATE.reason relaxed (baseline pre-3b)", check_51_adversarial_test_enforced),
 ]
 
 

@@ -135,9 +135,9 @@
     "REDACT_GATE": {
       "item_kind": "gate (one item: the final binary verdict)",
       "fields": {
-        "deliverable_id": "string", "tier": "T5", "pass": "boolean", "reason": "string"
+        "deliverable_id": "string", "tier": "T5", "pass": "boolean", "reason": "string (optional justification; logged for audit, not a BLOCK trigger)"
       },
-      "required": ["pass", "reason"]
+      "required": ["pass"]
     },
     "AMENDMENT_DRAFTER": {
       "item_kind": "amendment (one item per amendment)",

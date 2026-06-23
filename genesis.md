@@ -111,7 +111,7 @@ the source of truth for Law II enforcement.
 
 Store in config/agent_registry.json.
 
-### The 13 agents
+### The 14 agents
 
 | Agent | DOES | DOES NOT | Model |
 |-------|------|----------|-------|
@@ -120,7 +120,7 @@ Store in config/agent_registry.json.
 | FACT_CHECKER | Extract verifiable claims, search external sources, produce factual verdicts | Judge procedures, draft content, check style, correct source | GPT-4o + web |
 | PRACTICE_AUDITOR | Check procedures against current best practice, flag anti-patterns | Verify raw facts, draft content, assess legal basis | GPT-4o + web |
 | LEGAL_ANALYST | Assess legal basis, evaluate precedent, analyze regulatory framework | Draft correspondence, make policy judgments, search the web independently | Claude API |
-| STYLE_GUARDIAN | Enforce linguistic register, check style consistency, build register profiles | Change content (only style), draft, verify facts | Qwen local |
+| STYLE_GUARDIAN | Enforce linguistic register, check style consistency, build register profiles | Change content (only style), draft, verify facts | Claude API (Haiku; Qwen local only as an unavailable-fallback) |
 | ARCHIVIST | Index documents, establish chronology, maintain reference chains | Draft, analyze, recommend | Claude API |
 | INST_FINDER | Map topics to institutions, build institution registries | Draft correspondence, make policy judgments | Claude API |
 | CITATION_RESOLVER | Build cross-document reference graphs, map citation chains | Interpret citations (that is PROCESSOR), search external | Claude API |
@@ -128,6 +128,7 @@ Store in config/agent_registry.json.
 | REDACT_CLERK (T1-T2) | Apply tier 1-2 redaction (pattern-based PII, named entities) | Add content, make judgment calls on borderline cases | Qwen local |
 | REDACT_AUTHORITY (T3-T4) | Review and approve redaction decisions, adversarial re-identification testing | Draft, search, verify facts | Qwen local |
 | REDACT_GATE (T5) | Final existential gate — can any output be reconstructed to reveal redacted content? | Any function other than binary pass/fail on output safety | Qwen local |
+| AMENDMENT_DRAFTER | Compile findings from PRACTICE_AUDITOR, STYLE_GUARDIAN, VERIFIER, FACT_CHECKER into a tracked-changes document, produce referenced margin comments, propose rephrased text per conventions | Invent findings, override convention rules, make value judgments beyond conventions, produce content without a reference citation | Claude API |
 
 ### Agent activation
 
@@ -930,7 +931,7 @@ Build in order:
 
 1. Create the full directory structure from Part XII
 2. Write config/constitution.json with the seven seed laws
-3. Write config/agent_registry.json with the 13 agents
+3. Write config/agent_registry.json with the 14 agents
 4. Write config/agent_contracts.json with output schemas
 5. Write config/gpu_config.json (from existing)
 6. Write CLAUDE.md (project entry point)

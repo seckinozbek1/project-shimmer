@@ -813,6 +813,14 @@ _REDACTION_FAILURE = {
         "rendered docx text). 'Applied' must mean verified-absent everywhere shippable, so "
         "this BLOCKS rather than reporting success. See `detail.survivors` for the artifact(s) "
         "and span(s). This is a LAW-IV safety stop."),
+    "adversarial_test_failed": (
+        "REDACT_AUTHORITY approved the set but its adversarial re-identification test FAILED",
+        "AUTHORITY returned approved=true but adversarial_test_passed=false: the model's own "
+        "re-identification test says the redaction set can still be reconstructed. An approved-"
+        "but-unconfirmable redaction is NOT silently applied — it BLOCKS so the operator decides. "
+        "This is distinct from a garbled/missing field (contract_violation): the field was a clean "
+        "boolean False, a genuine failed test. Strengthen the redaction set (the clerk's spans / "
+        "categories) or the AUTHORITY prompt, then re-run. This is a LAW-IV safety stop."),
 }
 
 
@@ -822,6 +830,7 @@ _REDACTION_FAILURE = {
 _REDACTION_PUBLIC_KINDS = frozenset({
     "redactor_unavailable", "no_resolvable_redaction",
     "span_dropped", "pii_survives_in_deliverable", "no_operator_rule",
+    "adversarial_test_failed",
 })
 
 
@@ -1311,6 +1320,33 @@ def _persist_redactor_output(run_ctx, stage, doc_id, result) -> "str | None":
         return None
 
 
+def _classify_adversarial(auth_items):
+    """Read the VALUE of REDACT_AUTHORITY's adversarial_test_passed and keep THREE
+    cases distinct (baseline cleanup before Stage 3b — enforce the adversarial gate):
+
+      (i)  any item's adversarial_test_passed is present but NOT a clean boolean
+           (null / string / number) -> the model garbled the field -> BLOCK with the
+           EXISTING failure_kind 'contract_violation_fields'. Like a missing required
+           field, a malformed one is a contract-shape failure regardless of approved.
+      (ii) approved AND every adversarial_test_passed is boolean True -> proceed.
+      (iii) approved AND any adversarial_test_passed is boolean False -> a GENUINE
+           failed re-identification test -> BLOCK 'adversarial_test_failed' (distinct
+           from a garbled field). Never silently applied (LAW-IV).
+
+    A MISSING field never reaches here: it is contract-required, so run_task already
+    BLOCKed it upstream as contract_violation_fields (the field's presence is enforced
+    by the parser; this reads its value). When approved is False the model declined to
+    approve at all — the existing NOT_APPLIED path handles it, so no adversarial BLOCK
+    fires (the test value is moot). Returns (approved: bool, block_failure_kind|None)."""
+    approved = bool(auth_items) and all(bool(it.get("approved")) for it in auth_items)
+    adv = [it.get("adversarial_test_passed") for it in auth_items]
+    if any(not isinstance(v, bool) for v in adv):
+        return approved, "contract_violation_fields"
+    if approved and not all(v is True for v in adv):
+        return approved, "adversarial_test_failed"
+    return approved, None
+
+
 def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_registry,
                       *, redaction_enabled=True):
     """FINAL always-on pass (Part II redaction agents, LAW-IV). Runs every run,
@@ -1485,7 +1521,29 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
                                   "failure_kind": esc["failure_kind"], "escalation": esc}
             continue
         auth_items = [it for it in decode_items(auth_r["parsed"]) if "approved" in it]
-        approved = bool(auth_items) and all(bool(it.get("approved")) for it in auth_items)
+        # Audit (issues logging): surface the AUTHORITY decision incl. diagnostic
+        # `issues` on the bus, regardless of the outcome below. `issues` is an
+        # optional contract field nothing gated on before; it is now visible.
+        auth_issues = [iss for it in auth_items for iss in (it.get("issues") or [])]
+        _post_redaction(orch, doc["id"], "REDACTION_AUTHORITY_DECISION",
+                        {"approved": all(bool(it.get("approved")) for it in auth_items),
+                         "adversarial_test_passed": [it.get("adversarial_test_passed") for it in auth_items],
+                         "issues": auth_issues})
+        # ENFORCE the adversarial test (LAW-IV): approval now requires approved=true
+        # AND adversarial_test_passed=true. Three distinct cases (see
+        # _classify_adversarial): genuine failed test -> adversarial_test_failed BLOCK;
+        # garbled field -> contract_violation_fields BLOCK; both true -> proceed.
+        approved, adv_block = _classify_adversarial(auth_items)
+        if adv_block is not None:
+            esc = build_redaction_escalation(
+                doc_id=doc["id"], document_name=doc["name"], stage="REDACT_AUTHORITY",
+                failure_kind=adv_block,
+                raw_output_path=auth_r.get("raw_text_path"),
+                detail={"issues": auth_issues} if auth_issues else None)
+            _post_redaction_block(orch, esc)
+            summary[doc["id"]] = {"redacted": False, "state": "BLOCKED",
+                                  "failure_kind": esc["failure_kind"], "escalation": esc}
+            continue
 
         gate = _build_wrapper("REDACT_GATE", orch, keys)
         gate_r = gate.run_task(
@@ -1501,6 +1559,12 @@ def phase_9_redaction(orch, keys, op_docs, deliverables, run_ctx, convention_reg
             continue
         gate_items = [it for it in decode_items(gate_r["parsed"]) if "pass" in it]
         passed = bool(gate_items) and all(bool(it.get("pass")) for it in gate_items)
+        # Audit (reason logging): `reason` is now optional (relaxed from required;
+        # `pass` remains the safety verdict). Capture the justification for audit
+        # without it being a BLOCK trigger.
+        gate_reasons = [it.get("reason") for it in gate_items if it.get("reason")]
+        _post_redaction(orch, doc["id"], "REDACTION_GATE_DECISION",
+                        {"passed": passed, "reason": gate_reasons})
 
         if not (approved and passed):
             _post_redaction(orch, doc["id"], "REDACTION_NOT_APPLIED",
