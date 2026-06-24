@@ -44,6 +44,18 @@ agents propose changes; only the operator ratifies; agents never self-apply.
 - LAW-VI, Structure is earned, not assumed: organizational structure below the Top
   Orchestrator emerges from identified work through chartered task forces.
 
+The constitution is guarded at the meta level. A tripwire protects the constitution and
+its immutable core (the seven seed laws, which the genesis specification must mirror) and
+makes the verified, append-only, no-gap DELTA path the sole route to amend governed
+structure: a new amendment must carry the next id in sequence, be operator-ratified, and
+clear a scan that flags meta-level change attempts. The asymmetry here is deliberate and
+load-bearing. The tripwire refuses agents, which can never amend governed structure, but
+it never hard-blocks the operator, who is sovereign under LAW-0: on the operator's own
+input it surfaces a confirmation in interactive use and logs and proceeds otherwise, and
+it cannot be turned into a cage around the operator. The signature scan is a flag for
+operator attention, not a complete semantic guarantee: it has false positives and false
+negatives and does not claim to catch every bypass attempt.
+
 ## C. Vocabulary
 
 - INFRA-NNN: a ratified constitutional amendment (an act). It is recorded in the
@@ -55,6 +67,9 @@ agents propose changes; only the operator ratifies; agents never self-apply.
   example a confidentiality rule that marks certain spans as sensitive).
 - REF-*: a precise citation into the corpus (an article or section reference). Every
   amendment finding must cite at least one CONV-* and at least one REF-*.
+- WEB-REF-*: a structured citation into a discovered web reference (a search-found
+  framework or instrument), parallel to REF-* which cites the corpus. It is minted with a
+  stable id and cited the same way a REF-* is.
 
 ## D. Architecture
 
@@ -99,6 +114,16 @@ project's own labels, not a renumbered sequence):
 Multilingual support is built in: per-document language detection drives per-language
 embedding-model selection and direction-aware output for right-to-left scripts such as
 Arabic.
+
+Two grounding behaviors keep findings honest. A verifiability gate catches a finding that
+makes a confident positive claim while citing nothing: such an affirmation is flagged
+uncertain rather than passed, so an unsupported claim surfaces for review instead of
+reading as settled. And when no operator conventions exist (the empty-registry state), a
+finding cannot cite a convention because there are none, so it grounds in the corpus or in
+a discovered web reference instead; the convention requirement is relaxed only in that
+state, never when conventions are present. Discovered web references are first-class
+citations: a WEB-REF-* id is minted from a finding's structured web-source fields and
+cited alongside corpus REF-* ids.
 
 ## E. The sensitivity layer (LAW-IV in practice)
 

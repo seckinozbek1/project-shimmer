@@ -58,6 +58,24 @@ processing swarm governed by an append-only constitution.
 - Changes to the constitution or to governed inter-agent structure require an
   operator-ratified DELTA. Agents propose; the operator ratifies; agents never
   self-apply. The operator decides every escalation. No silent self-modification.
+- The meta-law tripwire (INFRA-043) extends the constitution guard
+  (`scripts/constitution_guard.py`) to the genesis/meta layer. `check_genesis_integrity`
+  requires genesis Part I to mirror the guarded `seed_laws` (a missing seed law flags a
+  tampered immutable core). The VERIFIED no-gap DELTA path is the SOLE route to change
+  governed structure: `verify_amendment_append` (enforced inside `check_constitution_change`)
+  requires a new amendment to carry the next id (`prior_max + 1`, never reused, never a gap),
+  be `operator_approved`, and clear the signature scan. Never bypass this path to change
+  governed structure.
+- The LAW-0 asymmetry is load-bearing, not a preference. The guard refuses AGENTS (they can
+  never amend governed structure; a signature-carrying agent DELTA is refused and routed to
+  the operator), but it NEVER hard-blocks the OPERATOR, who is sovereign under LAW-0:
+  operator input gets confirm-and-proceed in interactive mode and log-and-proceed in
+  non-interactive mode (`operator_input_verdict` returns proceed, or the operator's own
+  abort, never a block). Never build anything that could hard-block the operator on the
+  signature scan: a guard that cages the operator inverts LAW-0.
+- The signature scan (`scan_for_meta_signature`) is a FLAG for operator attention, not a
+  complete semantic guarantee: it has false positives and false negatives. Do not overclaim
+  it or rely on it as a complete bypass guard.
 
 ## The canonical envelope (INFRA-037)
 
@@ -65,6 +83,24 @@ processing swarm governed by an append-only constitution.
   item is strictly flat (every value a scalar or an array of scalars; no nested objects).
   Consumers read by reference from the append-only message bus, and a higher `revision`
   per `item_id` supersedes an earlier one.
+
+## Findings, citations, and grounding
+
+- The verifiability gate (`scripts/verifiability_gate.py`) is pipeline behavior, not a
+  governed change: an affirmative finding that cites nothing is downgraded to UNCERTAIN,
+  flagged-and-kept (never dropped). It reuses the UNCERTAIN channel (genesis Part XXV) and
+  INFRA-037 supersession (a `revision + 1` item). The fire-set is an explicit per-agent
+  constant (LEGAL_ANALYST GROUNDED; PRACTICE_AUDITOR ALIGNED/COMPLIANT/VIOLATION/ANTI_PATTERN;
+  FACT_CHECKER CONFIRMED); self-hedging verdicts never fire. Do not remove or weaken it.
+- WEB-REF is a real citation form (`WEB-REF-NNNN`), minted by
+  `reference_builder.add_web_reference` from the three structured web-source fields
+  (FACT_CHECKER `source_url`, PRACTICE_AUDITOR `reference_url` and `reference_source`) and
+  cited in `ref_ids` exactly like a REF-*. The corpus-REF regex uses the `(?<!WEB-)`
+  disambiguation so a WEB-REF id is never miscounted as a REF. Inline free-text URL
+  extraction is out of scope (convention-activated, deferred).
+- The empty-convention carve-out (INFRA-042): the CONV-* requirement is relaxed ONLY when
+  the convention registry is empty (an amendment then grounds on a REF-* or a WEB-REF-*).
+  NEVER relax it when conventions exist; the rule is state-gated, not blanket.
 
 ## The sensitivity boundary
 
