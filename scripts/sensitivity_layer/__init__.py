@@ -271,6 +271,101 @@ def rejoin_after_external(items, held, *, dedupe=True):
     return _current_revision(restored) if dedupe else restored
 
 
+# --- text-span masking + egress routing (INFRA-041 P2: wiring the 4 chokepoints) ----
+# The item-level x/y engine above masks a whole field of a structured item. The egress
+# chokepoints (prompts, web queries) send FREE TEXT where only the operator-marked SPANS
+# may be masked, leaving the rest intact. mask_text reuses the SAME operator-authorized
+# detector and the SAME typed-placeholder convention as the item engine -- it is the engine's
+# text entrypoint, not a second masker.
+
+# Network egress backends. qwen_local is LOCAL hardware (the sanctioned sensitive handler):
+# it is EXEMPT from masking by construction (the whole point of may_handle_sensitive routing).
+NETWORK_BACKENDS = frozenset({"claude_api", "openai_api"})
+
+
+def mask_text(text, *, operator_rules, project_root):
+    """Replace each operator-marked SPAN in `text` with a typed placeholder (the span's
+    detector/category as TYPE), leaving non-sensitive text intact. Returns (masked_text,
+    n_spans). Operator-convention-driven (redaction_detect over operator rules), never
+    model-judged. Empty inputs -> unchanged."""
+    if not text or not operator_rules or project_root is None:
+        return text, 0
+    spans = redaction_detect.detect(project_root, text, operator_rules)
+    if not spans:
+        return text, 0
+    masked, n = text, 0
+    for it in spans:
+        s = it.get("span")
+        if not s or s not in masked:
+            continue
+        masked = masked.replace(s, _placeholder_for(it.get("detector") or it.get("category") or "SPAN"))
+        n += 1
+    return masked, n
+
+
+def should_mask_outbound(*, sensitive, backend, registry, agent):
+    """The LIVE consumer of may_handle_sensitive (INFRA-041 P2). Mask an outbound payload iff
+    the layer is active AND the run is sensitive AND the egress is a NETWORK backend AND the
+    agent is NOT cleared to handle sensitive content locally. A NETWORK agent flagged
+    may_handle_sensitive is a LAW-IV misconfiguration -> RAISE, never silently egress.
+    Returns False (no masking) for the local qwen path -- it is the sanctioned handler."""
+    if not (is_active() and sensitive):
+        return False
+    if backend not in NETWORK_BACKENDS:
+        return False
+    if may_handle_sensitive(registry, agent):
+        raise PermissionError(
+            f"agent {agent!r} is may_handle_sensitive but egresses on network backend {backend!r}; "
+            f"LAW-IV forbids sensitive content on the network")
+    return True
+
+
+def _ledger_rule_ids(operator_rules):
+    return sorted({r.get("id") for r in (operator_rules or []) if r.get("id")})
+
+
+def make_outbound_prompt_masker(*, sensitive, operator_rules, project_root, registry,
+                                run_id=None, ledger_path=None):
+    """Build the prompt-egress masker injected into AgentWrapper (chokepoint 1). The wrapper
+    invokes the returned callable just before dispatch; this keeps the masking decision in the
+    privacy home and the import boundary intact (the wrapper imports nothing from here). The
+    callable masks the (stable_prefix, dynamic_suffix) text for NETWORK backends under sensitive
+    mode and writes a per-call exposure record (no raw content); returns the text unchanged for
+    the local/exempt/non-sensitive cases."""
+    def masker(stable_prefix, dynamic_suffix, *, backend, agent):
+        if not should_mask_outbound(sensitive=sensitive, backend=backend, registry=registry, agent=agent):
+            return stable_prefix, dynamic_suffix
+        sp, n1 = mask_text(stable_prefix, operator_rules=operator_rules, project_root=project_root)
+        ds, n2 = mask_text(dynamic_suffix, operator_rules=operator_rules, project_root=project_root)
+        rec = {"item_id": f"{agent}:prompt", "revision": 1,
+               "exposure": "masked" if (n1 + n2) else "passed", "type": "prompt",
+               "masked_fields": [k for k, n in (("stable_prefix", n1), ("dynamic_suffix", n2)) if n],
+               "rule_ids": _ledger_rule_ids(operator_rules), "detector_hits": n1 + n2}
+        _write_exposure_ledger([rec], run_id=run_id, agent=agent, doc_id=None,
+                               project_root=project_root, ledger_path=ledger_path)
+        return sp, ds
+    return masker
+
+
+def make_query_masker(*, sensitive, operator_rules, project_root, run_id=None, ledger_path=None):
+    """Build the web-query masker injected into SearchRouter (chokepoint 2). The router invokes
+    the returned callable at the top of search(); the web path is always a network egress, so
+    the masker masks operator spans in the query under sensitive mode (and writes an exposure
+    record), returning it unchanged when inactive/non-sensitive."""
+    def masker(query):
+        if not (is_active() and sensitive):
+            return query
+        masked, n = mask_text(query, operator_rules=operator_rules, project_root=project_root)
+        rec = {"item_id": "search:query", "revision": 1,
+               "exposure": "masked" if n else "passed", "type": "web_query",
+               "masked_fields": ["query"] if n else [], "rule_ids": _ledger_rule_ids(operator_rules),
+               "detector_hits": n}
+        _write_exposure_ledger([rec], run_id=run_id, agent=None, doc_id=None,
+                               project_root=project_root, ledger_path=ledger_path)
+        return masked
+    return masker
+
+
 # --- inactive-layer hard gate + logged override (mirrors redaction waiver) ------
 
 def record_sensitivity_override(project_root, run_id, *, reason, now_iso=None):

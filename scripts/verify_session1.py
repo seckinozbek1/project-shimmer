@@ -2084,6 +2084,120 @@ def check_67_masking_idempotent_and_inert():
                "raises (no silent passthrough) when operator-convention inputs are missing under sensitive mode")
 
 
+def check_68_chokepoint_prompt_masked():
+    """INFRA-041 P2 chokepoint 1: the per-agent prompt egress is masked. WIRED: run_task calls
+    outbound_masker BEFORE dispatch (source-order). EXECUTED: the injected masker masks a NETWORK
+    prompt under sensitive mode (raw operator span gone), EXEMPTS qwen_local (local handler), passes
+    raw under non-sensitive, and RAISES for a network agent flagged may_handle_sensitive (LAW-IV
+    misconfig). may_handle_sensitive is consumed live here. CPU-only, tempdir, non-mutating."""
+    import tempfile, inspect
+    import sensitivity_layer as S
+    import agent_wrapper
+    src = inspect.getsource(agent_wrapper.AgentWrapper.run_task)
+    i_mask, i_disp = src.find("outbound_masker("), src.find("self.dispatch(")
+    if not (0 <= i_mask < i_disp):
+        return _fail("run_task must call outbound_masker BEFORE dispatch")
+    d = Path(tempfile.mkdtemp(prefix="shimmer_p2_68_"))
+    rules, _ = _p1_masking_fixture(d)
+    registry = {"NETAGENT": {"backend": "claude_api", "may_handle_sensitive": False},
+                "LOCALAGENT": {"backend": "qwen_local", "may_handle_sensitive": True},
+                "BADNET": {"backend": "openai_api", "may_handle_sensitive": True}}
+    ledger = d / "ledger.jsonl"
+    masker = S.make_outbound_prompt_masker(sensitive=True, operator_rules=rules, project_root=str(d),
+                                           registry=registry, run_id="R", ledger_path=str(ledger))
+    sp_raw, ds_raw = "Citizen ID 12-345-6789 must be reviewed.", "Public clause text."
+    saved = S.LAYER_ACTIVE
+    try:
+        S.LAYER_ACTIVE = True
+        sp, ds = masker(sp_raw, ds_raw, backend="claude_api", agent="NETAGENT")
+        if "12-345-6789" in sp or "[REDACTED" not in sp:
+            return _fail(f"network prompt not masked: {sp!r}")
+        if masker(sp_raw, ds_raw, backend="qwen_local", agent="LOCALAGENT")[0] != sp_raw:
+            return _fail("qwen_local must be EXEMPT (local handler; prompt unchanged)")
+        try:
+            masker(sp_raw, ds_raw, backend="openai_api", agent="BADNET")
+            return _fail("network may_handle_sensitive agent must RAISE (LAW-IV misconfig)")
+        except PermissionError:
+            pass
+    finally:
+        S.LAYER_ACTIVE = saved
+    off = S.make_outbound_prompt_masker(sensitive=False, operator_rules=rules, project_root=str(d),
+                                        registry=registry)
+    if off(sp_raw, ds_raw, backend="claude_api", agent="NETAGENT")[0] != sp_raw:
+        return _fail("non-sensitive run must pass the prompt unchanged")
+    if "12-345-6789" in ledger.read_text(encoding="utf-8"):
+        return _fail("raw operator span leaked into the exposure ledger")
+    return _ok("chokepoint 1 prompt masked: wired before dispatch; network masked, qwen_local exempt, "
+               "non-sensitive raw, network+may_handle_sensitive raises; ledger payload-free")
+
+
+def check_69_chokepoint_query_masked():
+    """INFRA-041 P2 chokepoint 2: the web-query egress is masked. WIRED: search() calls the injected
+    query masker before any engine call (source). EXECUTED: with the layer active + sensitive, a query
+    carrying an operator span reaches the (stubbed) engine MASKED; inert when inactive. No network,
+    tempdir, non-mutating."""
+    import tempfile, inspect
+    import sensitivity_layer as S
+    import search_router as SR
+    if "self.query_masker" not in inspect.getsource(SR.SearchRouter.search):
+        return _fail("search() must call self.query_masker before egress")
+    d = Path(tempfile.mkdtemp(prefix="shimmer_p2_69_"))
+    rules, _ = _p1_masking_fixture(d)
+    masker = S.make_query_masker(sensitive=True, operator_rules=rules, project_root=str(d),
+                                 run_id="R", ledger_path=str(d / "l.jsonl"))
+    saved = S.LAYER_ACTIVE
+    try:
+        S.LAYER_ACTIVE = True
+        router = SR.SearchRouter(project_root=d, keys={}, registry={}, query_masker=masker)
+        seen = {}
+        router._ddg_search = lambda q, max_results=5: (seen.update(ddg=q) or ([], ""))
+        router._brave_search = lambda q: (seen.update(brave=q) or ([], ""))
+        router.search("lookup ID 12-345-6789 today", agent=None, claim_type="x")
+        recorded = seen.get("ddg", "")
+        if "12-345-6789" in recorded or "[REDACTED" not in recorded:
+            return _fail(f"query reached the engine unmasked: {recorded!r}")
+        inert = masker  # same masker, but layer flips back below
+    finally:
+        S.LAYER_ACTIVE = saved
+    if masker("ID 12-345-6789 today") != "ID 12-345-6789 today":
+        return _fail("query masker must be inert when the layer is inactive")
+    return _ok("chokepoint 2 query masked: wired at search() top; operator span masked before the "
+               "engine under sensitive mode; inert when the layer is inactive")
+
+
+def check_70_chokepoint_date_web_suppressed():
+    """INFRA-041 P2 chokepoint 4: the BOOT date-web egress is SUPPRESSED (not masked) under sensitive
+    mode -- no document title is sent to the web. EXECUTED: date_from_web makes no search call and
+    returns None under sensitive mode, calls search under non-sensitive. WIRED: resolve_dates threads
+    sensitive, and pipeline.main passes it to _populate_operational (source). No network."""
+    import inspect
+    import document_dating as DD
+    from search_router import SearchResult
+
+    class _Rec:
+        def __init__(self): self.calls = []
+        def search(self, q, **k):
+            self.calls.append(q)
+            return SearchResult(query=q, hits=[], strategy_used="x", verdict="UNVERIFIABLE", diagnostic={})
+
+    r = _Rec()
+    if DD.date_from_web("Confidential Merger File 2024", search_router=r, sensitive=True) is not None:
+        return _fail("date_from_web must return None (suppressed) under sensitive mode")
+    if r.calls:
+        return _fail("date_from_web must NOT call search under sensitive mode (raw title would egress)")
+    r2 = _Rec()
+    DD.date_from_web("Public Title 2024", search_router=r2, sensitive=False)
+    if not r2.calls:
+        return _fail("date_from_web must call search under non-sensitive mode")
+    if "sensitive=sensitive" not in inspect.getsource(DD.resolve_dates):
+        return _fail("resolve_dates must thread sensitive to date_from_web")
+    import pipeline
+    if "sensitive=sensitivity_layer.is_active() and redaction_enabled" not in inspect.getsource(pipeline.main):
+        return _fail("pipeline.main must pass sensitive to _populate_operational")
+    return _ok("chokepoint 4 date-web SUPPRESSED under sensitive mode (no title to the web); "
+               "non-sensitive still searches; resolve_dates + pipeline thread the sensitive flag")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -2162,6 +2276,9 @@ CHECKS = [
     ("65 masking engine x/y split + typed placeholders + exposure ledger (INFRA-041 P1)", check_65_masking_engine_splits),
     ("66 masking rejoin restores held-local y + dedupes by item_id/revision (INFRA-041 P1)", check_66_masking_rejoin_dedupe),
     ("67 masking idempotent + inert under non-sensitive + no silent passthrough (INFRA-041 P1)", check_67_masking_idempotent_and_inert),
+    ("68 chokepoint 1 prompt egress masked (network) / exempt (qwen_local) (INFRA-041 P2)", check_68_chokepoint_prompt_masked),
+    ("69 chokepoint 2 web query masked before egress (INFRA-041 P2)", check_69_chokepoint_query_masked),
+    ("70 chokepoint 4 BOOT date-web suppressed under sensitive mode (INFRA-041 P2)", check_70_chokepoint_date_web_suppressed),
 ]
 
 

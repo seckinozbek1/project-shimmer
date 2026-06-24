@@ -325,9 +325,13 @@ def _resolve_review_scope(project_root: Path) -> dict:
     except json.JSONDecodeError: return {"cutoff_type": "all"}
 
 
-def _populate_operational(project_root: Path, search_router: SearchRouter) -> tuple[list[dict], list[dict]]:
+def _populate_operational(project_root: Path, search_router: SearchRouter,
+                          *, sensitive: bool = False) -> tuple[list[dict], list[dict]]:
     """Returns (context_records, operational_records). Each record:
-       {filename, date, date_source, title, abs_path}."""
+       {filename, date, date_source, title, abs_path}.
+
+    `sensitive` (INFRA-041 P2, chokepoint 4) suppresses the date cascade's web last-resort:
+    under sensitive mode no document title is sent to the web (the cascade stays local)."""
     context_dir = project_root / "input" / "context"
     operational_dir = project_root / "input" / "operational"
     operational_dir.mkdir(parents=True, exist_ok=True)
@@ -340,7 +344,7 @@ def _populate_operational(project_root: Path, search_router: SearchRouter) -> tu
                              if p.is_file() and text_extract.is_supported(p))
     if not candidate_files:
         return [], []
-    dated = resolve_dates(candidate_files, search_router=search_router)
+    dated = resolve_dates(candidate_files, search_router=search_router, sensitive=sensitive)
     for record, path in zip(dated, candidate_files):
         record["abs_path"] = str(path)
     write_dates(project_root, dated)
@@ -389,7 +393,12 @@ def _populate_operational(project_root: Path, search_router: SearchRouter) -> tu
 def _build_wrapper(name: str, orch: TopOrchestrator, keys: dict) -> AgentWrapper:
     return AgentWrapper(name=name, constitution=orch.constitution, bus=orch.bus,
                         registry=orch.registry, contracts=orch.contracts,
-                        keys=keys, cost_tracker=orch.cost_tracker)
+                        keys=keys, cost_tracker=orch.cost_tracker,
+                        # LAW-IV outbound masking (INFRA-041 P2, chokepoint 1): inject the
+                        # prompt masker the pipeline built from the operator rules. Defaults to
+                        # None (no masking) until the injector is set, so wrappers built before
+                        # the injector exists, and every non-sensitive run, are unchanged.
+                        outbound_masker=getattr(orch, "outbound_masker", None))
 
 
 async def _run_one(wrapper, work_payload, run_objectives, channel="main", max_tokens=2048,
@@ -1393,7 +1402,9 @@ def main(argv=None):
 
     # Date cascade + cutoff -> populate input/operational/
     print("[pipeline] date cascade + cutoff", file=sys.stderr)
-    context_records, operational_records = _populate_operational(ROOT, search_router)
+    # chokepoint 4 (INFRA-041 P2): suppress the BOOT date-web egress under sensitive mode.
+    context_records, operational_records = _populate_operational(
+        ROOT, search_router, sensitive=sensitivity_layer.is_active() and redaction_enabled)
 
     # Load text for context + operational
     ctx_docs = _load_corpus(ROOT / "input" / "context")
@@ -1456,6 +1467,20 @@ def main(argv=None):
                   f"(logged to the governance ledger). Redaction-intent that failed to compile: {warn}.",
                   file=sys.stderr)
             return 4
+
+    # LAW-IV outbound masking injectors (INFRA-041 P2): build the prompt masker (chokepoint 1,
+    # injected into every agent wrapper via orch) and the web-query masker (chokepoint 2, injected
+    # into the search router) from the compiled operator rules. Both are gated on the layer being
+    # active AND the run being sensitive; the layer is inactive today, so they are inert and this
+    # is byte-for-byte unchanged until activation (P5). sensitive = redaction_enabled (the
+    # established run signal); operator rules are the sole sensitivity source (no model judge).
+    _masking_operator_rules = redaction_rules(conv_registry_dict).get("rules", [])
+    orch.outbound_masker = sensitivity_layer.make_outbound_prompt_masker(
+        sensitive=redaction_enabled, operator_rules=_masking_operator_rules, project_root=ROOT,
+        registry=orch.registry, run_id=run_ctx.run_id)
+    search_router.query_masker = sensitivity_layer.make_query_masker(
+        sensitive=redaction_enabled, operator_rules=_masking_operator_rules, project_root=ROOT,
+        run_id=run_ctx.run_id)
 
     # Reference index
     reference_index = _build_reference_index(ROOT, ctx_docs, op_docs, conv_registry_dict,

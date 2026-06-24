@@ -127,14 +127,23 @@ def date_from_text(text: str) -> str | None:
     return None
 
 
-def date_from_web(title_hint: str | None, *, search_router=None) -> str | None:
+def date_from_web(title_hint: str | None, *, search_router=None, sensitive=False) -> str | None:
     """Last-resort: a web search for the document title's publication date.
 
     Caller passes a SearchRouter instance to keep this module decoupled.
     Returns None when no plausible year is recovered.
+
+    LAW-IV outbound masking (INFRA-041 P2, chokepoint 4): under sensitive mode the web call
+    is SUPPRESSED entirely (a masked title is meaningless for a date search, so the safe
+    action is to withhold the egress, not mask it). The caller computes `sensitive` from the
+    layer-active + run-sensitivity decision; the dating cascade then falls back to the local
+    filename/metadata/content sources. `sensitive` defaults False so non-sensitive runs and
+    unmodified callers are unchanged.
     """
     if not title_hint or search_router is None:
         return None
+    if sensitive:
+        return None  # suppress the BOOT web egress under sensitive mode (no title to the web)
     try:
         result = search_router.search(f"{title_hint} publication date",
                                        claim_type="date_event")
@@ -201,8 +210,11 @@ def _years_from_first_page(text: str) -> list[int]:
     return out
 
 
-def resolve_dates(documents: list[Path], *, search_router=None) -> list[dict]:
+def resolve_dates(documents: list[Path], *, search_router=None, sensitive=False) -> list[dict]:
     """Run the full cascade for each document path per Part XXIV.
+
+    `sensitive` (INFRA-041 P2, chokepoint 4) is threaded to the web last-resort: under
+    sensitive mode the web egress is suppressed (the cascade stays local).
 
     Returns records with: filename, date, date_source, date_confidence,
     date_candidates (only on uncertain), title.
@@ -272,7 +284,7 @@ def resolve_dates(documents: list[Path], *, search_router=None) -> list[dict]:
             else:
                 # Source 4: web search (last resort).
                 web_date = date_from_web(
-                    title or path.stem, search_router=search_router
+                    title or path.stem, search_router=search_router, sensitive=sensitive
                 )
                 if web_date:
                     date = web_date

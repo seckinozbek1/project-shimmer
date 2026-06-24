@@ -328,6 +328,13 @@ class AgentWrapper:
     # every agent writes its run-scoped artifacts (contract-violation dumps) into
     # the CURRENT run's folder, never a shared global output/ path (Part XXVII §A).
     run_context: Any = None
+    # LAW-IV outbound masking (INFRA-041 P2, chokepoint 1). An INJECTED callable
+    # (built by sensitivity_layer.make_outbound_prompt_masker; pipeline owns the import,
+    # so the boundary "only orchestration imports sensitivity_layer" holds and this module
+    # imports nothing from the privacy home). Called just before dispatch to mask the
+    # outbound prompt for NETWORK backends under sensitive mode; None => no masking (the
+    # default, so non-sensitive runs and unmodified callers are byte-for-byte unchanged).
+    outbound_masker: Any = None
 
     def __post_init__(self):
         if self.name not in self.registry:
@@ -757,6 +764,14 @@ class AgentWrapper:
         # last, so Claude (explicit cache_control) and GPT (automatic prefix cache)
         # both reuse the stable prefix across calls.
         stable_prefix, dynamic_suffix = self.build_prompt(pkg, work_payload)
+        # LAW-IV outbound masking (INFRA-041 P2, chokepoint 1): mask the assembled prompt
+        # UPSTREAM of dispatch, for NETWORK backends under sensitive mode (qwen_local is
+        # exempt: local hardware is the sanctioned sensitive handler). The injected masker
+        # owns the network/exempt/may_handle_sensitive decision; when none is injected (the
+        # default, and every non-sensitive run) this is a no-op and the prompt is unchanged.
+        if self.outbound_masker is not None:
+            stable_prefix, dynamic_suffix = self.outbound_masker(
+                stable_prefix, dynamic_suffix, backend=self.backend, agent=self.name)
         # Per-agent token ceiling override from contract (e.g., ARCHIVIST=4096
         # to fit the corpus-level structural inventory). The contract's
         # max_output_tokens wins over the caller-supplied max_tokens because

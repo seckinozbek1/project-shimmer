@@ -51,10 +51,15 @@ class SearchRouter:
     project_root: Path
     keys: dict = field(default_factory=dict)
     registry: dict = field(default_factory=dict)  # agents map, for may_use_web enforcement
+    # LAW-IV outbound masking (INFRA-041 P2, chokepoint 2). An INJECTED callable
+    # (sensitivity_layer.make_query_masker; orchestration owns the import, preserving the
+    # boundary). Called at the top of search() to mask operator spans in the query before
+    # any web egress under sensitive mode; None => no masking (the default).
+    query_masker: Any = None
     _lock: threading.RLock = field(default_factory=threading.RLock)
 
     @classmethod
-    def open(cls, project_root, keys=None, registry=None):
+    def open(cls, project_root, keys=None, registry=None, query_masker=None):
         if registry is None:
             try:
                 reg = json.loads((Path(project_root) / "config" / "agent_registry.json")
@@ -62,7 +67,8 @@ class SearchRouter:
                 registry = reg.get("agents", {})
             except Exception:
                 registry = {}
-        return cls(project_root=project_root, keys=keys or {}, registry=registry)
+        return cls(project_root=project_root, keys=keys or {}, registry=registry,
+                   query_masker=query_masker)
 
     # Protected durable learnings (INFRA-030): outside config/, in durable/learnings/.
     @property
@@ -138,6 +144,12 @@ class SearchRouter:
             raise PermissionError(
                 f"agent {agent!r} may not use the web (may_use_web is false) — "
                 f"capability gate (INFRA-038); LAW-IV forbids sensitive content on the network")
+        # LAW-IV outbound masking (INFRA-041 P2, chokepoint 2): mask operator spans in the
+        # query BEFORE any web egress, under sensitive mode. The injected masker is inert
+        # (returns the query unchanged) when the layer is inactive or the run is non-sensitive,
+        # so today's behavior is byte-for-byte unchanged until the layer is activated (P5).
+        if self.query_masker is not None:
+            query = self.query_masker(query)
         diagnostic = {"attempted": []}
         plan_primary = (query_plan or {}).get("primary") or {}
         if plan_primary.get("engine") == "api" and plan_primary.get("url"):
