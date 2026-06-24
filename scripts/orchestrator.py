@@ -412,6 +412,12 @@ class TopOrchestrator:
         return summary
 
     def _collect_memory_stats(self):
+        # Stats-only read of the durable verification cache. The cache is INTENTIONALLY
+        # disconnected from the verification path (see verification_cache.py docstring):
+        # store()/lookup() are deliberately unwired — re-verify-every-run is the
+        # correctness-over-speed default for defect-intolerant legal review. This call
+        # surfaces whatever durable cache state exists for the run summary; it neither
+        # populates nor consults the cache during verification.
         try:
             from verification_cache import VerificationCache
             return VerificationCache.open(self.root).stats()

@@ -3,6 +3,16 @@
 Tier-2 (project) and tier-3 (global) both live under durable/ (INFRA-030). The
 former within-run tier-1 session cache was retired (INFRA-034): it was opened but
 never written by any run, so it carried no state and only added wiring.
+
+INTENTIONALLY DISCONNECTED FROM THE VERIFICATION PATH (design choice, NOT decay):
+`store()`/`lookup()` are deliberately NOT called by the live pipeline — FACT_CHECKER
+re-verifies every claim on every run. This is the correctness-over-speed default for
+defect-intolerant legal review: a stale cached verdict could mask a re-check on a
+changed source document, and a missed re-check is a worse failure than a redundant
+search. The class is retained as (a) the run-summary stats hook
+(orchestrator._collect_memory_stats -> stats()) and (b) a future opt-in caching hook,
+to be wired only by an explicit operator-ratified change. `store`/`lookup` therefore
+have no live callers by design (the verify gate exercises them directly, check 17).
 """
 
 from __future__ import annotations

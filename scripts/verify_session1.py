@@ -1489,6 +1489,46 @@ def check_55_editorial_board_output_budget():
                f"{cfg['max_tokens']}, resolver default={dflt}; silent-pass guard still fires on genuine truncation")
 
 
+def check_56_audit_synthesizer_wired():
+    """Cross-run learning loop (genesis Part X): the AUDIT SYNTHESIZER converts recurring
+    failures into DELTA proposals. It is WIRED but was previously UNGATED (a D7-class blind
+    spot: future decay would pass green). This check asserts, by source/AST inspection:
+    (1) AuditSynthesizer is imported and CALLED in the live pipeline inside the `if op_docs:`
+    block (synthesize + escalate_delta_proposals), not orphaned/commented; (2) it READS a
+    live source (bus.read_all) and WRITES via run_context (audit_synthesis + delta_proposals
+    paths), not a relocated/dead path; (3) proposals are PROPOSAL-SIDE ONLY —
+    DeltaProposal.requires_operator_approval defaults True, escalation routes through
+    escalate_delta_proposals, and the synthesizer never self-applies (no Constitution.save /
+    check_constitution_change call). FAILS if the call site is removed or it self-applies."""
+    import inspect, dataclasses
+    import pipeline, audit_synthesizer
+    from audit_synthesizer import DeltaProposal
+    msrc = inspect.getsource(pipeline.main)
+    for needle in ("AuditSynthesizer(", ".synthesize(", "escalate_delta_proposals("):
+        if needle not in msrc:
+            return _fail(f"audit synthesizer call site missing from pipeline.main: {needle!r}")
+    i_op = msrc.find("if op_docs:")
+    i_syn = msrc.find("AuditSynthesizer(")
+    if i_op < 0 or not (0 <= i_op < i_syn):
+        return _fail("AuditSynthesizer is not inside the live `if op_docs:` block")
+    ssrc = inspect.getsource(audit_synthesizer)
+    if "self.bus.read_all()" not in ssrc:
+        return _fail("synthesizer no longer reads the live bus (self.bus.read_all)")
+    if "audit_synthesis_path" not in ssrc or "delta_proposals_path" not in ssrc:
+        return _fail("synthesizer output not wired to run_context audit_synthesis/delta_proposals paths")
+    flds = {f.name: f for f in dataclasses.fields(DeltaProposal)}
+    if "requires_operator_approval" not in flds or flds["requires_operator_approval"].default is not True:
+        return _fail("DeltaProposal.requires_operator_approval default is not True (proposals must be operator-gated)")
+    forbidden = {"check_constitution_change", "save"}  # self-apply paths
+    for node in ast.walk(ast.parse(ssrc)):
+        if isinstance(node, ast.Attribute) and node.attr in forbidden:
+            return _fail(f"synthesizer calls '.{node.attr}()' — must be proposal-side only, never self-apply")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in forbidden:
+            return _fail(f"synthesizer calls '{node.func.id}()' — must be proposal-side only, never self-apply")
+    return _ok("audit synthesizer WIRED + proposal-side: called in `if op_docs:`, reads bus.read_all, writes "
+               "delta_proposals/audit_synthesis via run_context, requires_operator_approval=True, no self-apply path")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -1555,6 +1595,7 @@ CHECKS = [
     ("53 editorial board escalation loop is bounded (max_rounds cap before climb)", check_53_editorial_board_bounded),
     ("54 editorial board uses no operator ESCALATE path (intra-phase on the bus)", check_54_editorial_board_no_operator_escalate),
     ("55 editorial board output budget is config-resolved (no hardcoded 2048)", check_55_editorial_board_output_budget),
+    ("56 audit synthesizer wired + proposal-side (cross-run learning loop)", check_56_audit_synthesizer_wired),
 ]
 
 

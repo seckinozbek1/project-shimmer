@@ -85,6 +85,11 @@ def spawn_all(project_root, *, overwrite=False):
     report.record(_spawn_situational_awareness(project_root, combined, corpus, overwrite=overwrite))
     report.record(_spawn_linguistic_identity(project_root, combined, corpus, overwrite=overwrite))
     report.record(_spawn_institution_registry(project_root, combined, overwrite=overwrite))
+    # institution_registry is CONSUMED at runtime (search_router direct-fetch). The next two
+    # (citation_convention, speech_acts_taxonomy) are PRODUCE-ONLY durable reference assets:
+    # spawned here from the corpus but intentionally not consumed in the live agent path
+    # (parallel to the audit-only SPEECH_ACT_TAGGER / CITATION_RESOLVER outputs). Retained as
+    # durable reference / future opt-in hook; wire a consumer only via an operator-ratified change.
     report.record(_spawn_citation_convention(project_root, combined, overwrite=overwrite))
     report.record(_spawn_speech_acts_taxonomy(project_root, combined, overwrite=overwrite))
     report.record(_record_spawn_log(project_root, report))

@@ -91,6 +91,11 @@ class SearchRouter:
             tmp.replace(path)
 
     def discovered_apis(self): return self._load_json(self.discovered_apis_path, {"apis": []}).get("apis", [])
+    # INTENTIONAL manual operator aid (NOT decay): discovered APIs are surfaced to the operator
+    # as PENDING candidates only. approved_apis() has no live caller BY DESIGN — operator-approved
+    # APIs are NOT auto-routed into search() (operator sovereignty, LAW-0). The approval record is
+    # a manual aid; auto-consumption is a deliberate non-feature, to be wired only by an
+    # operator-ratified change.
     def approved_apis(self): return [a for a in self.discovered_apis() if a.get("status") == "APPROVED"]
 
     def add_discovered_api(self, entry):
@@ -150,16 +155,30 @@ class SearchRouter:
                 if hits:
                     self.record_learning(claim_type, "direct", "FOUND", query)
                     return SearchResult(query=query, hits=hits, strategy_used="direct", verdict="FOUND", diagnostic=diagnostic)
-        ddg_hits, ddg_err = self._ddg_search(query)
-        diagnostic["attempted"].append({"engine": "ddg", "count": len(ddg_hits), "error": ddg_err})
-        if len(ddg_hits) >= SEARCH_FAIL_THRESHOLD:
-            self.record_learning(claim_type, "ddg", "FOUND", query)
-            return SearchResult(query=query, hits=ddg_hits, strategy_used="ddg", verdict="FOUND", diagnostic=diagnostic)
-        brave_hits, brave_err = self._brave_search(query)
-        diagnostic["attempted"].append({"engine": "brave", "count": len(brave_hits), "error": brave_err})
-        combined = ddg_hits + brave_hits
+        # General web stage. APPLY the recorded learnings: consult the learned best
+        # engine for this claim_type to ORDER the two general engines (ddg/brave). The
+        # api/direct stages above keep precedence (input-gated precision sources — a
+        # learned preference cannot conjure a url/institution, so it is applied only to
+        # the general engines). COLD CACHE (no learning yet) -> preferred=None -> order
+        # stays [ddg, brave], i.e. today's fixed behavior byte-for-byte. record_learning
+        # writes are unchanged.
+        general = {"ddg": self._ddg_search, "brave": self._brave_search}
+        preferred = self.preferred_strategy(claim_type)
+        diagnostic["preferred_strategy"] = preferred
+        order = ["ddg", "brave"]
+        if preferred in general:
+            order = [preferred, "brave" if preferred == "ddg" else "ddg"]
+        primary_name, supp_name = order
+        primary_hits, primary_err = general[primary_name](query)
+        diagnostic["attempted"].append({"engine": primary_name, "count": len(primary_hits), "error": primary_err})
+        if len(primary_hits) >= SEARCH_FAIL_THRESHOLD:
+            self.record_learning(claim_type, primary_name, "FOUND", query)
+            return SearchResult(query=query, hits=primary_hits, strategy_used=primary_name, verdict="FOUND", diagnostic=diagnostic)
+        supp_hits, supp_err = general[supp_name](query)
+        diagnostic["attempted"].append({"engine": supp_name, "count": len(supp_hits), "error": supp_err})
+        combined = primary_hits + supp_hits
         if combined:
-            strategy = "brave" if brave_hits else "ddg"
+            strategy = supp_name if supp_hits else primary_name
             self.record_learning(claim_type, strategy, "FOUND", query)
             return SearchResult(query=query, hits=combined, strategy_used=strategy, verdict="FOUND", diagnostic=diagnostic)
         self.record_learning(claim_type, "exhausted", "FAIL", query)
