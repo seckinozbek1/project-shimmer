@@ -40,6 +40,7 @@ from agent_wrapper import (AgentWrapper, load_api_keys, decode_items,
 import amendment_render
 from audit_synthesizer import AuditSynthesizer
 import ontology_capture
+import ontology_graph
 from convention_parser import parse_conventions, write_registry
 from sensitivity_layer import redaction_rules
 import sensitivity_layer
@@ -1641,6 +1642,18 @@ def main(argv=None):
         print(f"[pipeline] OGE capture: +{oge['provisions_appended']} provisions; "
               f"proposal accumulator={oge['accumulator_size']} (sensitive={oge['sensitive']})",
               file=sys.stderr)
+        # OGE Tier-1 graph rebuild (build B2). The capture above just updated the durable stores,
+        # so rebuild ontology/stores/graph.json from them (build_graph defaults = the real durable
+        # sources + the real out_path). The graph is built from ALREADY-STORED data (already masked
+        # if the run was sensitive), so no new masking decision is introduced here. Best-effort: a
+        # rebuild failure never fails a completed run (the graph is a derived artifact).
+        try:
+            g = ontology_graph.build_graph()
+            print(f"[pipeline] OGE graph rebuilt: {g['stats']['nodes_total']} nodes, "
+                  f"{g['stats']['edges_total']} edges", file=sys.stderr)
+        except Exception as e:
+            print(f"[pipeline] OGE graph rebuild skipped (non-fatal): {type(e).__name__}: {e}",
+                  file=sys.stderr)
     except Exception as e:
         print(f"[pipeline] OGE capture skipped (non-fatal): {type(e).__name__}: {e}", file=sys.stderr)
 

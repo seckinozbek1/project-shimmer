@@ -1636,6 +1636,172 @@ def check_58_oge_masked_write_gate():
                "[REDACTED:TYPE] for RAW fields (original_text/proposed_text/comment); SAFE fields untouched")
 
 
+def _oge59_fixture(d):
+    """Write a synthetic source set into tempdir `d` for the B2 ingest checks. Returns a
+    sources dict for build_graph. Includes abs_path in document_dates (to prove exclusion),
+    a provision with a citation token + a speech-act verb, a convention, and a referenced-only
+    REF (REF-9) that is NOT a provision record (so B2 must materialize it as a stub)."""
+    (d / "document_dates.json").write_text(json.dumps({"documents": [
+        {"filename": "docA", "date": "2024-01-01", "date_source": "filename",
+         "date_confidence": "high", "title": None, "abs_path": "C:/secret/path/docA.md"}]},
+        ensure_ascii=False), encoding="utf-8")
+    (d / "conventions.json").write_text(json.dumps({"conventions": [
+        {"id": "CONV-001", "category": "review", "rule": "operator rule text",
+         "source_file": "f.md", "source_location": "line 1", "severity": "required", "action": "flag"}]},
+        ensure_ascii=False), encoding="utf-8")
+    (d / "citation.json").write_text(json.dumps({"rules": [
+        {"name": "UN_RES", "pattern": r"[ASE]/RES/\d+", "sample_count": 1, "examples": ["A/RES/70/1"]}]},
+        ensure_ascii=False), encoding="utf-8")
+    (d / "speech.json").write_text(json.dumps({"speech_acts": [
+        {"name": "decide", "pattern": r"\bdecides?\b", "evidence_count": 1, "examples": ["decides"]}]},
+        ensure_ascii=False), encoding="utf-8")
+    prov = [
+        {"node": "Provision", "id": "docA::REF-1", "document_id": "docA", "ref_id": "REF-1",
+         "finding_type": "factual", "action": "flag", "severity": "high", "convention_ref": "CONV-001",
+         "context_refs": ["REF-9"], "original_text": "Article 5 cites A/RES/70/1 and decides the matter.",
+         "proposed_text": None, "comment": "c", "stub": False, "run_id": "R1", "captured_at": "t1"},
+    ]
+    (d / "provisions.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in prov) + "\n",
+                                        encoding="utf-8")
+    return {"document_dates": d / "document_dates.json", "conventions": d / "conventions.json",
+            "citation_forms": d / "citation.json", "speech_acts": d / "speech.json",
+            "provisions": d / "provisions.jsonl"}
+
+
+def check_59_oge_ingest_executed():
+    """OGE build B2 (ontology/SCHEMA.md A/B/C5-C6): the Tier-1 graph ingest is EXECUTED on a
+    synthetic fixture in a tempdir and asserted (executed coverage, the D7 lesson; non-mutating,
+    never writes the real graph.json). Asserts all five node types; HAS_PROVISION / GOVERNED_BY /
+    CROSS_REFERENCES edges; the referenced-only REF materialized as a stub (incomplete=true); at
+    least one CITES and one EXHIBITS derived edge; and NO abs_path anywhere in graph.json (Q7)."""
+    import tempfile
+    import ontology_graph
+    d = Path(tempfile.mkdtemp(prefix="shimmer_oge59_"))
+    sources = _oge59_fixture(d)
+    out = d / "graph.json"
+    g = ontology_graph.build_graph(sources=sources, out_path=str(out))
+    types = {n["type"] for n in g["nodes"]}
+    for t in ("Document", "Provision", "Convention", "CitationForm", "SpeechAct"):
+        if t not in types:
+            return _fail(f"node type missing from graph: {t} (have {sorted(types)})")
+    etypes = {e["type"] for e in g["edges"]}
+    for et in ("HAS_PROVISION", "GOVERNED_BY", "CROSS_REFERENCES", "CITES", "EXHIBITS"):
+        if et not in etypes:
+            return _fail(f"edge type missing: {et} (have {sorted(etypes)})")
+
+    def has_edge(t, s, tg):
+        return any(e["type"] == t and e["source"] == s and e["target"] == tg for e in g["edges"])
+    if not has_edge("HAS_PROVISION", "docA", "docA::REF-1"):
+        return _fail("HAS_PROVISION docA -> docA::REF-1 missing")
+    if not has_edge("GOVERNED_BY", "docA::REF-1", "CONV-001"):
+        return _fail("GOVERNED_BY docA::REF-1 -> CONV-001 missing")
+    if not has_edge("CROSS_REFERENCES", "docA::REF-1", "docA::REF-9"):
+        return _fail("CROSS_REFERENCES docA::REF-1 -> docA::REF-9 missing")
+    stub = next((n for n in g["nodes"] if n["type"] == "Provision" and n["id"] == "docA::REF-9"), None)
+    if not stub or not stub.get("stub") or not stub.get("incomplete"):
+        return _fail(f"referenced-only REF-9 not materialized as an incomplete stub (Q3): {stub}")
+    if not any(e["type"] == "CITES" for e in g["edges"]) or not any(e["type"] == "EXHIBITS" for e in g["edges"]):
+        return _fail("derivable CITES/EXHIBITS edges not produced")
+    if "abs_path" in out.read_text(encoding="utf-8"):
+        return _fail("graph.json contains abs_path (Q7 violation)")
+    return _ok(f"OGE Tier-1 ingest EXECUTED: 5 node types, edges {sorted(etypes)}; referenced-only "
+               f"REF-9 stub (incomplete); CITES+EXHIBITS derived; no abs_path "
+               f"({g['stats']['nodes_total']} nodes, {g['stats']['edges_total']} edges)")
+
+
+def check_60_oge_ingest_payload_free():
+    """OGE build B2 BUILD INVARIANT: ingest is payload-free. A provision stored masked
+    ([REDACTED:PROVISION_TEXT], as B1 writes under a sensitive run) yields a node carrying the
+    placeholder AS STORED (never unmasked) and ZERO CITES/EXHIBITS matches (a regex cannot match
+    a placeholder). Non-mutating (tempdir only)."""
+    import tempfile
+    import ontology_graph
+    d = Path(tempfile.mkdtemp(prefix="shimmer_oge60_"))
+    (d / "document_dates.json").write_text(json.dumps({"documents": []}), encoding="utf-8")
+    (d / "conventions.json").write_text(json.dumps({"conventions": []}), encoding="utf-8")
+    # patterns that WOULD match real text but must NOT match a placeholder
+    (d / "citation.json").write_text(json.dumps({"rules": [
+        {"name": "UN_RES", "pattern": r"[ASE]/RES/\d+"}]}), encoding="utf-8")
+    (d / "speech.json").write_text(json.dumps({"speech_acts": [
+        {"name": "decide", "pattern": r"\bdecides?\b"}]}), encoding="utf-8")
+    prov = [{"node": "Provision", "id": "docA::REF-1", "document_id": "docA", "ref_id": "REF-1",
+             "finding_type": "factual", "action": "flag", "severity": "high", "convention_ref": None,
+             "context_refs": [], "original_text": "[REDACTED:PROVISION_TEXT]",
+             "proposed_text": "[REDACTED:PROVISION_TEXT]", "comment": "[REDACTED:ANALYST_COMMENT]",
+             "stub": False, "run_id": "R1", "captured_at": "t1"}]
+    (d / "provisions.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in prov) + "\n",
+                                        encoding="utf-8")
+    sources = {"document_dates": d / "document_dates.json", "conventions": d / "conventions.json",
+               "citation_forms": d / "citation.json", "speech_acts": d / "speech.json",
+               "provisions": d / "provisions.jsonl"}
+    out = d / "graph.json"
+    g = ontology_graph.build_graph(sources=sources, out_path=str(out))
+    node = next((n for n in g["nodes"] if n["id"] == "docA::REF-1"), None)
+    if node is None:
+        return _fail("provision node not built")
+    if node.get("original_text") != "[REDACTED:PROVISION_TEXT]":
+        return _fail(f"ingest did not carry the stored placeholder verbatim: {node.get('original_text')!r}")
+    cites = [e for e in g["edges"] if e["type"] == "CITES"]
+    exhibits = [e for e in g["edges"] if e["type"] == "EXHIBITS"]
+    if cites or exhibits:
+        return _fail(f"regex matched a placeholder (must not): CITES={cites} EXHIBITS={exhibits}")
+    if "[REDACTED:[REDACTED" in out.read_text(encoding="utf-8"):
+        return _fail("graph.json contains a nested placeholder")
+    return _ok("ingest payload-free: masked provision carried as the stored placeholder; "
+               "zero CITES/EXHIBITS matched against a placeholder; no unmasking, no nesting")
+
+
+def check_61_oge_graph_rebuilt_at_run_end():
+    """OGE build B2 wiring: the Tier-1 graph is rebuilt at run-end, right after the capture hook.
+    WIRED (not dormant): pipeline.main imports ontology_graph and calls build_graph at run-end,
+    inside the same post-capture block as capture_run (source check). WORKS end-to-end (executed
+    coverage, the D7 lesson): the run-end SEQUENCE is reproduced on a tempdir -- capture_run writes
+    a provision to a temp store, then build_graph rebuilds graph.json from that store, and the
+    captured provision appears as a node. Non-mutating: tempdir only, never the real graph.json."""
+    import inspect, tempfile
+    import pipeline, ontology_capture, ontology_graph
+    msrc = inspect.getsource(pipeline.main)
+    if "ontology_graph" not in msrc or "build_graph(" not in msrc:
+        return _fail("graph rebuild not wired into pipeline.main (build_graph absent -> dormant)")
+    # the rebuild must sit AFTER the capture call (run-end, post-capture), not before it
+    i_cap = msrc.find("capture_run(")
+    i_build = msrc.find("build_graph(")
+    if not (0 <= i_cap < i_build):
+        return _fail("build_graph is not called after capture_run at run-end")
+
+    # executed: reproduce the run-end sequence (capture -> rebuild) on a tempdir
+    d = Path(tempfile.mkdtemp(prefix="shimmer_oge61_"))
+    deliv = d / "deliv"; deliv.mkdir()
+    doc_id = "docX"
+    master = {"document_id": doc_id, "amendments": [
+        {"location": "REF-1", "convention_ref": "CONV-001", "context_refs": [],
+         "finding_type": "factual", "original_text": "some provision text", "proposed_text": None,
+         "action": "flag", "comment": "c", "severity": "high"}]}
+    (deliv / f"{doc_id}__amendments.json").write_text(json.dumps(master, ensure_ascii=False), encoding="utf-8")
+    (d / "delta_proposals.json").write_text(json.dumps({"generated_at": "t", "proposals": []}),
+                                            encoding="utf-8")
+
+    class _RC:
+        run_id = "RUN-TEST-61"
+        def deliverables_dir(_self): return deliv
+        def delta_proposals_path(_self): return d / "delta_proposals.json"
+
+    op_docs = [{"id": doc_id, "name": doc_id}]
+    deliverables = {doc_id: {"amendments_json": str(deliv / f"{doc_id}__amendments.json")}}
+    stores = d / "stores"
+    cap = ontology_capture.capture_run(_RC(), op_docs, deliverables, sensitive=False, stores_dir=str(stores))
+    if cap.get("provisions_appended", 0) < 1:
+        return _fail(f"capture step wrote no provisions: {cap}")
+    out = d / "graph.json"
+    g = ontology_graph.build_graph(sources={"provisions": stores / "provisions.jsonl"}, out_path=str(out))
+    if not out.exists():
+        return _fail("graph.json not produced by the run-end rebuild")
+    if not any(n["type"] == "Provision" and n["id"] == f"{doc_id}::REF-1" for n in g["nodes"]):
+        return _fail("rebuilt graph does not reflect the captured provision (docX::REF-1 absent)")
+    return _ok("run-end rebuild WIRED + EXECUTED: pipeline.main calls build_graph after capture_run; "
+               "capture->rebuild sequence yields graph.json reflecting the captured provision")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -1705,6 +1871,9 @@ CHECKS = [
     ("56 audit synthesizer wired + proposal-side (cross-run learning loop)", check_56_audit_synthesizer_wired),
     ("57 OGE capture hook wired + executed (provisions + proposal accumulator)", check_57_oge_capture_wired),
     ("58 OGE masked-write gate (sensitive -> [REDACTED:TYPE], non-sensitive -> real)", check_58_oge_masked_write_gate),
+    ("59 OGE Tier-1 ingest executed (nodes + edges + stub + derivable + no abs_path)", check_59_oge_ingest_executed),
+    ("60 OGE ingest payload-free (masked text carried as-is; regex cannot match a placeholder)", check_60_oge_ingest_payload_free),
+    ("61 OGE graph rebuilt at run-end (build_graph wired after capture_run)", check_61_oge_graph_rebuilt_at_run_end),
 ]
 
 
