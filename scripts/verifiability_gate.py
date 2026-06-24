@@ -19,6 +19,7 @@ import re
 from datetime import datetime, timezone
 
 from agent_wrapper import decode_items  # THE canonical INFRA-037 reader (current revision per item_id)
+import reference_builder  # single source of truth for the per-agent web-source field map (INFRA-042)
 
 # FIRE-SET: the UNAMBIGUOUS positive affirmations per agent. An item carrying one of these
 # verdicts that cites nothing is internally inconsistent (claims solid ground, shows none).
@@ -41,13 +42,13 @@ AFFIRMATIVE_VERDICTS = {
 # external-standard affirmation), AMENDMENT_DRAFTER amendments (already REF-gated by
 # pipeline_amendment_validator + check_35; not duplicated here).
 
-# Per-agent cited web-source field: a non-empty value counts as grounding so a legitimately
-# web-grounded finding is not mis-flagged. WEB-REF as a first-class citation FORM is OPT-2's
-# job; here a non-empty source simply counts as grounding so OPT-1 does not mis-fire.
-_WEB_SOURCE_FIELD = {"FACT_CHECKER": "source_url", "PRACTICE_AUDITOR": "reference_url"}
-
-# Same REF-* form the amendment validator uses (no duplication of the validator itself).
-_REF_PATTERN = re.compile(r"\bREF-\d{4,}\b")
+# Same REF-* form the amendment validator uses (no duplication of the validator itself). Tightened
+# with (?<!WEB-) (INFRA-042) so a WEB-REF-NNNN id is never miscounted as a corpus REF. WEB-REF is now
+# a real structured citation form (INFRA-042): is_grounded recognizes a WEB-REF-* id as grounding,
+# with the raw web-source fields kept as the fallback (the per-agent field map is reference_builder's
+# single source of truth, now covering all three structured fields).
+_REF_PATTERN = re.compile(r"(?<!WEB-)\bREF-\d{4,}\b")
+_WEBREF_PATTERN = re.compile(r"\bWEB-REF-\d{4,}\b")
 
 
 def _now():
@@ -56,6 +57,10 @@ def _now():
 
 def _is_ref(value) -> bool:
     return isinstance(value, str) and bool(_REF_PATTERN.search(value))
+
+
+def _is_webref(value) -> bool:
+    return isinstance(value, str) and bool(_WEBREF_PATTERN.search(value))
 
 
 def fires_on(agent, item) -> bool:
@@ -68,18 +73,17 @@ def fires_on(agent, item) -> bool:
 
 
 def is_grounded(agent, item) -> bool:
-    """A fired-on item is grounded if ANY of: ref is a REF-*; any ref_ids entry is a REF-*
-    (this counts CONTEXT refs, so a valid absence finding citing the norm-establishing
-    context is grounded and is NOT mis-flagged); or the agent's cited web-source field is
-    non-empty."""
-    if _is_ref(item.get("ref")):
+    """A fired-on item is grounded if ANY of: ref is a REF-* or a WEB-REF-*; any ref_ids entry is a
+    REF-* or a WEB-REF-* (ref_ids counts CONTEXT refs and minted WEB-REF ids, so a valid absence
+    finding citing the norm, or a web-grounded finding, is not mis-flagged); or one of the agent's
+    raw structured web-source fields is non-empty (the transitional fallback, INFRA-042)."""
+    if _is_ref(item.get("ref")) or _is_webref(item.get("ref")):
         return True
     for r in (item.get("ref_ids") or []):
-        if _is_ref(r):
+        if _is_ref(r) or _is_webref(r):
             return True
-    field = _WEB_SOURCE_FIELD.get(agent)
-    if field:
-        v = item.get(field)
+    for fname in reference_builder.WEB_SOURCE_FIELDS.get(agent, ()):
+        v = item.get(fname)
         if isinstance(v, str) and v.strip():
             return True
     return False

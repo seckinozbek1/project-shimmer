@@ -2420,6 +2420,102 @@ def check_75_verifiability_gate():
                "and excluded verdicts (THIN/DISPUTED) untouched; idempotent")
 
 
+def check_76_empty_convention_regime_and_webref():
+    """INFRA-042 / OPT-2: WEB-REF as a backed citation form + the empty-registry CONV carve-out,
+    reconciled with the OPT-1 gate. Proves all seven cases. Tempdir, non-mutating."""
+    import tempfile
+    import reference_builder as RB
+    from pipeline_amendment_validator import validate_amendment
+    import verifiability_gate as VG
+    from agent_wrapper import decode_items
+    import pipeline
+
+    d = Path(tempfile.mkdtemp(prefix="shimmer_opt2_76_"))
+
+    # 1. WEB-REF assigned + persisted + citable (round-trips open/save, _web_seq recovered)
+    idx_path = d / "reference_index.json"
+    idx = RB.ReferenceIndex.open(d, index_path=idx_path)
+    w1 = idx.add_web_reference(url="https://example.org/a")
+    if w1.web_ref_id != "WEB-REF-0001":
+        return _fail(f"case1: first WEB-REF id wrong: {w1.web_ref_id}")
+    idx.save()
+    idx2 = RB.ReferenceIndex.open(d, index_path=idx_path)
+    if w1.web_ref_id not in idx2.web_by_id:
+        return _fail("case1: WEB-REF did not persist/reload")
+    if idx2.add_web_reference(url="https://example.org/b").web_ref_id != "WEB-REF-0002":
+        return _fail("case1: _web_seq not recovered on reopen")
+
+    amd = {"location": "REF-0001", "action": "flag", "severity": "required"}
+
+    # 2. empty registry + REF-grounded amendment -> passes clean (no convention_ref needed)
+    ok2, e2 = validate_amendment({**amd, "comment": "grounded at [REF-0042]"}, registry_empty=True)
+    if not ok2:
+        return _fail(f"case2: empty-registry REF-grounded amendment must pass: {e2}")
+
+    # 3. empty registry + WEB-REF-grounded amendment -> passes clean
+    ok3, e3 = validate_amendment({**amd, "comment": "grounded at [WEB-REF-0001]"}, registry_empty=True)
+    if not ok3:
+        return _fail(f"case3: empty-registry WEB-REF-grounded amendment must pass: {e3}")
+
+    # 4. empty registry + no grounding at all -> still flagged
+    ok4, _ = validate_amendment({**amd, "comment": "no citations here at all"}, registry_empty=True)
+    if ok4:
+        return _fail("case4: empty-registry amendment with no REF/WEB-REF must be flagged")
+
+    # 5. non-empty registry -> CONV+REF rule unchanged
+    ok5a, _ = validate_amendment({**amd, "convention_ref": "CONV-001", "comment": "only [REF-0042]"},
+                                 registry_empty=False)
+    if ok5a:
+        return _fail("case5: non-empty registry must still require CONV in the comment (REF-only fails)")
+    ok5b, e5b = validate_amendment({**amd, "convention_ref": "CONV-001", "comment": "[CONV-001] at [REF-0042]"},
+                                   registry_empty=False)
+    if not ok5b:
+        return _fail(f"case5: non-empty registry CONV+REF must pass: {e5b}")
+    # 5c. validator REF/WEB-REF disambiguation: in non-empty mode a WEB-REF must NOT satisfy the
+    # required REF (proves the (?<!WEB-) tighten in the validator, not just the OPT-1 gate).
+    ok5c, _ = validate_amendment({**amd, "convention_ref": "CONV-001", "comment": "[CONV-001] only [WEB-REF-0001]"},
+                                 registry_empty=False)
+    if ok5c:
+        return _fail("case5c: a WEB-REF must not count as the required corpus REF in non-empty mode")
+
+    # 6. OPT-1 gate recognizes WEB-REF as grounding + REF/WEB-REF disambiguation
+    if not VG.is_grounded("LEGAL_ANALYST", {"ref_ids": ["WEB-REF-0001"]}):
+        return _fail("case6: is_grounded must recognize a WEB-REF id")
+    if VG._is_ref("WEB-REF-0001") or not VG._is_webref("WEB-REF-0001"):
+        return _fail("case6: a WEB-REF id must NOT match the REF form and MUST match the WEB-REF form")
+    r6 = {"agent": "LEGAL_ANALYST", "ok": True, "doc_id": "d", "parsed": {"agent": "LEGAL_ANALYST",
+          "doc_id": "d", "items": [{"item_id": "i6", "revision": 1, "ts": "t", "confidence": "CONFIDENT",
+          "kind": "finding", "verdict": "GROUNDED", "ref": "", "ref_ids": ["WEB-REF-0001"]}]}}
+    VG.apply_verifiability_gate([r6])
+    if decode_items(r6["parsed"])[0].get("confidence") != "CONFIDENT":
+        return _fail("case6: a WEB-REF-grounded affirmation must not be downgraded by OPT-1")
+
+    # 7. reference_source-minted: the mint pass covers all three structured fields
+    r7 = {"agent": "PRACTICE_AUDITOR", "ok": True, "doc_id": "d", "parsed": {"agent": "PRACTICE_AUDITOR",
+          "doc_id": "d", "items": [{"item_id": "i7", "revision": 1, "ts": "t", "confidence": "CONFIDENT",
+          "kind": "finding", "verdict": "ALIGNED", "reference_source": "https://iso.org/27001",
+          "reference_url": "", "ref_ids": []}]}}
+    minted = pipeline._mint_web_references([r7], idx)
+    cur7 = decode_items(r7["parsed"])[0]
+    if minted < 1 or not any(VG._is_webref(x) for x in (cur7.get("ref_ids") or [])):
+        return _fail(f"case7: reference_source must mint a WEB-REF into ref_ids "
+                     f"(minted={minted}, ref_ids={cur7.get('ref_ids')})")
+
+    # wiring: phase_6_synthesis mints WEB-REFs BEFORE the OPT-1 gate and threads registry_empty
+    # from the convention count into the validator (source-order, the WIRE-AT-THE-END discipline).
+    import inspect
+    src = inspect.getsource(pipeline.phase_6_synthesis)
+    i_mint, i_gate = src.find("_mint_web_references("), src.find("apply_verifiability_gate(")
+    if not (0 <= i_mint < i_gate):
+        return _fail("wiring: _mint_web_references must run before the OPT-1 gate in phase_6_synthesis")
+    if "registry_empty=(n_total_conventions == 0)" not in src:
+        return _fail("wiring: validate_amendment_payload must thread registry_empty from the convention count")
+
+    return _ok("INFRA-042: WEB-REF minted/persisted/citable; empty-registry REF or WEB-REF amendment "
+               "passes, no-grounding flagged; non-empty CONV+REF unchanged; OPT-1 recognizes WEB-REF "
+               "(disambiguated from REF); reference_source mints a WEB-REF (all three structured fields)")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -2506,6 +2602,7 @@ CHECKS = [
     ("73 graph.json masks Convention.rule + CitationForm.examples under sensitive (INFRA-041 P4)", check_73_graph_masks_cross_run_fields),
     ("74 delta_proposals masks evidence + trigger + proposed_change under sensitive (INFRA-041 P4)", check_74_delta_proposals_masks_three),
     ("75 verifiability gate downgrades unverifiable affirmations to UNCERTAIN (OPT-1)", check_75_verifiability_gate),
+    ("76 empty-convention regime + WEB-REF backed citation form (OPT-2 / INFRA-042)", check_76_empty_convention_regime_and_webref),
 ]
 
 

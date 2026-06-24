@@ -57,6 +57,7 @@ from orchestrator import OperatorDecision, TopOrchestrator
 from pipeline_amendment_validator import validate_amendment_payload
 import verifiability_gate
 from reference_builder import ReferenceIndex
+import reference_builder
 from sensitivity_layer.redaction_stage import run_redaction_phase
 import redaction_gate
 import run_context as run_context_mod
@@ -598,6 +599,46 @@ def _harvest_amendment_payloads_from_bus(orch) -> dict:
     return out
 
 
+def _mint_web_references(results, reference_index) -> int:
+    """INFRA-042: mint a WEB-REF-NNNN id for each STRUCTURED web-source value on FACT_CHECKER /
+    PRACTICE_AUDITOR findings (source_url, reference_url, reference_source) and append it to the
+    finding's ref_ids via INFRA-037 supersession (a revision+1 item), so a web-grounded finding is
+    seen as grounded by the OPT-1 gate and is citable by AMENDMENT_DRAFTER. Inline free-text URLs
+    are out of scope. Mutates the wrappers in place; returns the count of WEB-REF ids minted."""
+    minted = 0
+    for r in (results or []):
+        if not (isinstance(r, dict) and r.get("ok")):
+            continue
+        agent = r.get("agent")
+        if agent not in reference_builder.WEB_SOURCE_FIELDS:
+            continue
+        parsed = r.get("parsed")
+        if not (isinstance(parsed, dict) and isinstance(parsed.get("items"), list)):
+            continue
+        supersessions = []
+        for item in decode_items(parsed):
+            sources = reference_builder.web_sources_in(agent, item)
+            if not sources:
+                continue
+            existing = list(item.get("ref_ids") or [])
+            new_ids = []
+            for _field, value in sources:
+                entry = reference_index.add_web_reference(url=value)
+                reference_index.cite_web(entry.web_ref_id, agent)
+                if entry.web_ref_id not in existing and entry.web_ref_id not in new_ids:
+                    new_ids.append(entry.web_ref_id)
+            if not new_ids:
+                continue
+            sup = dict(item)
+            sup["revision"] = int(item.get("revision", 1)) + 1
+            sup["ts"] = datetime.now(timezone.utc).isoformat()
+            sup["ref_ids"] = existing + new_ids
+            supersessions.append(sup)
+            minted += len(new_ids)
+        parsed["items"].extend(supersessions)
+    return minted
+
+
 async def phase_6_synthesis(orch, keys, op_docs, production, audit, conv_review,
                             run_objectives, convention_registry, reference_index,
                             embed_store=None):
@@ -623,13 +664,21 @@ async def phase_6_synthesis(orch, keys, op_docs, production, audit, conv_review,
     print(f"[pipeline] phase 6 context retrieval mode: {retrieval_mode}",
           file=sys.stderr, flush=True)
 
+    # INFRA-042: mint WEB-REF ids from the structured web-source fields BEFORE the OPT-1 gate, so a
+    # web-grounded finding is seen as grounded (its WEB-REF id is in ref_ids) and is citable.
+    web_results = (production or []) + (audit or []) + (conv_review or [])
+    minted = _mint_web_references(web_results, reference_index)
+    if minted:
+        reference_index.save()
+        print(f"[pipeline] minted {minted} WEB-REF(s) from structured web-source fields",
+              file=sys.stderr, flush=True)
+
     # OPT-1 verifiability gate: a CONFIDENT positive affirmation that cites nothing is
     # downgraded to UNCERTAIN via INFRA-037 supersession, before findings feed synthesis,
     # the amendment drafter, and render. Operates on the canonical result wrappers that
     # every _items_for/decode_items consumer reads (production: LEGAL_ANALYST; audit:
     # FACT_CHECKER; conv_review: PRACTICE_AUDITOR). Flagged-and-kept, never dropped.
-    vg = verifiability_gate.apply_verifiability_gate(
-        (production or []) + (audit or []) + (conv_review or []))
+    vg = verifiability_gate.apply_verifiability_gate(web_results)
     if vg["downgraded"]:
         print(f"[pipeline] verifiability gate: downgraded {vg['downgraded']} unverifiable "
               f"affirmation(s) to UNCERTAIN", file=sys.stderr, flush=True)
@@ -740,7 +789,10 @@ async def phase_6_synthesis(orch, keys, op_docs, production, audit, conv_review,
                     )
                 amendments_payload["amendments"] = kept
 
-        ok_payload, errs = validate_amendment_payload(amendments_payload)
+        # INFRA-042: in the empty-registry state the CONV-* requirement is relaxed (an amendment
+        # grounds on >=1 REF-* or >=1 WEB-REF-*); when conventions exist the rule holds unchanged.
+        ok_payload, errs = validate_amendment_payload(
+            amendments_payload, registry_empty=(n_total_conventions == 0))
         amendments_payload["_validator_errors"] = errs
 
         # Single canonical master -> on-demand renders (Part XXVII §E / INFRA-033).

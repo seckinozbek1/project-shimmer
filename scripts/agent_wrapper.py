@@ -659,7 +659,8 @@ class AgentWrapper:
             "e.g. one item per finding/element/redaction).\n"
             "Per item, supply the core fields: ref (the REF-*/segment id this item is about), kind, "
             "confidence (CONFIDENT|UNCERTAIN), verdict (only when you judge), ref_ids (flat array of all "
-            "REF-* you cite). Plus this agent's fields: "
+            "REF-* you cite; a search-discovered web reference is cited as a WEB-REF-* id, INFRA-042). "
+            "Plus this agent's fields: "
             f"{cf}; required per item: {required}. "
             "(item_id, revision, ts are stamped by the runtime — you may omit them.)\n"
             f'Nothing to report -> {{"agent": "{self.name}", "doc_id": "<id>", "items": []}}\n'

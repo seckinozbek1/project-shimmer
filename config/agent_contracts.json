@@ -1,7 +1,7 @@
 {
   "version": "1.2.0",
   "created": "2026-05-26",
-  "description": "Per-agent output schemas under the CANONICAL INTER-AGENT ENVELOPE (INFRA-037). Every agent emits ONE wrapper as body.payload: {\"agent\": str, \"doc_id\": str, \"items\": [ flat item, ... ]}. items is ALWAYS a list (singleton -> one element; nothing to report -> []). Each item is STRICTLY FLAT: values are scalars or arrays of scalars only -- no nested objects, no arrays of objects (structure is expressed as MORE items). Per-item CORE fields are enforced globally by AgentWrapper, not repeated per contract: model-owned ref, kind, confidence (CONFIDENT|UNCERTAIN), optional verdict, and ref_ids (flat citation array); runtime-owned item_id, revision, ts (stamped by make_envelope). The `fields`/`required` below are this agent's per-item AGENT-SPECIFIC flat fields. Convention-review agents must carry ref_ids (Part XVIII Section B).",
+  "description": "Per-agent output schemas under the CANONICAL INTER-AGENT ENVELOPE (INFRA-037). Every agent emits ONE wrapper as body.payload: {\"agent\": str, \"doc_id\": str, \"items\": [ flat item, ... ]}. items is ALWAYS a list (singleton -> one element; nothing to report -> []). Each item is STRICTLY FLAT: values are scalars or arrays of scalars only -- no nested objects, no arrays of objects (structure is expressed as MORE items). Per-item CORE fields are enforced globally by AgentWrapper, not repeated per contract: model-owned ref, kind, confidence (CONFIDENT|UNCERTAIN), optional verdict, and ref_ids (flat citation array); runtime-owned item_id, revision, ts (stamped by make_envelope). The `fields`/`required` below are this agent's per-item AGENT-SPECIFIC flat fields. Convention-review agents must carry ref_ids (Part XVIII Section B). ref_ids may also carry WEB-REF-* ids (search-discovered web references minted from the structured web-source fields, INFRA-042), cited exactly like a REF-*.",
   "envelope": "canonical/v1 (INFRA-037): {agent, doc_id, items:[flat items]}; core per item = item_id(runtime), revision(runtime), ts(runtime), ref, kind, confidence, verdict(optional), ref_ids",
   "contracts": {
     "PROCESSOR": {
@@ -28,7 +28,7 @@
       "fields": {
         "claim_id": "string", "original_text": "string",
         "verdict": "CONFIRMED | DISPUTED | OUTDATED | UNVERIFIABLE",
-        "evidence": "string", "source_url": "string | null", "search_method": "string",
+        "evidence": "string", "source_url": "string | null (a URL here mints a WEB-REF-* added to ref_ids, INFRA-042)", "search_method": "string",
         "ref_ids": "array of REF-* strings (required in convention review)"
       },
       "required": ["claim_id", "verdict", "search_method"]
@@ -38,7 +38,7 @@
       "fields": {
         "procedure_id": "string", "procedure_text": "string",
         "verdict": "ALIGNED | ANTI_PATTERN | OUTDATED | NO_REFERENCE_AVAILABLE | COMPLIANT | VIOLATION | AMBIGUOUS",
-        "reference_source": "string | null", "reference_url": "string | null",
+        "reference_source": "string | null (a URL or named source here mints a WEB-REF-*, INFRA-042)", "reference_url": "string | null (a URL here mints a WEB-REF-*, INFRA-042)",
         "recommendation": "string",
         "conv_id": "CONV-* string (required in convention review)",
         "severity": "required | recommended | advisory",
@@ -134,9 +134,9 @@
         "original_text": "string — the exact text being amended",
         "proposed_text": "string | null — proposed replacement (null if flag-only)",
         "action": "flag | rephrase | reject | annotate",
-        "comment": "string — must contain >=1 CONV-* and >=1 REF-*",
+        "comment": "string, must contain >=1 CONV-* and >=1 REF-* (empty registry per INFRA-042: >=1 REF-* or >=1 WEB-REF-*, no CONV required)",
         "severity": "required | recommended | advisory",
-        "ref_ids": "array of REF-* strings (all citations; >=1 required)"
+        "ref_ids": "array of REF-* or WEB-REF-* strings (all citations; >=1 required)"
       },
       "required": ["location", "convention_ref", "original_text", "action", "comment", "ref_ids"]
     },
