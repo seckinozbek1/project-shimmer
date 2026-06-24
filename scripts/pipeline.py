@@ -41,6 +41,7 @@ import amendment_render
 from audit_synthesizer import AuditSynthesizer
 import ontology_capture
 import ontology_graph
+import ontology_gnn
 from convention_parser import parse_conventions, write_registry
 from sensitivity_layer import redaction_rules
 import sensitivity_layer
@@ -1651,6 +1652,17 @@ def main(argv=None):
             g = ontology_graph.build_graph()
             print(f"[pipeline] OGE graph rebuilt: {g['stats']['nodes_total']} nodes, "
                   f"{g['stats']['edges_total']} edges", file=sys.stderr)
+            # OGE GNN incremental update (build B3). Sequence: capture_run -> build_graph -> gnn.
+            # MACHINERY not learning: one fwd + one delta-only backprop over the rebuilt graph, then
+            # persist weights + high-water mark. GPU optional (warn-not-fail). Best-effort: a GNN
+            # failure (or a missing GPU) NEVER fails a completed run -- the GNN state is a derived asset.
+            try:
+                gs = ontology_gnn.gnn_update()
+                print(f"[pipeline] OGE GNN updated: delta={gs['delta_size']}/{gs['nodes']} nodes, "
+                      f"loss={gs['loss']:.6f}, device={gs['device']}", file=sys.stderr)
+            except Exception as e:
+                print(f"[pipeline] OGE GNN update skipped (non-fatal): {type(e).__name__}: {e}",
+                      file=sys.stderr)
         except Exception as e:
             print(f"[pipeline] OGE graph rebuild skipped (non-fatal): {type(e).__name__}: {e}",
                   file=sys.stderr)

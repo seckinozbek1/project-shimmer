@@ -1802,6 +1802,158 @@ def check_61_oge_graph_rebuilt_at_run_end():
                "capture->rebuild sequence yields graph.json reflecting the captured provision")
 
 
+def _oge_gnn_graph(nodes, edges):
+    """A minimal graph.json dict for the GNN checks (build_features/build_adjacency consume it)."""
+    return {"schema": "oge_graph/v1", "tier": 1, "generated_at": "t", "nodes": nodes, "edges": edges,
+            "stats": {}}
+
+
+def check_62_oge_gnn_executed():
+    """OGE build B3: the GNN engine is EXECUTED end-to-end on a synthetic seeded graph (executed
+    coverage, the D7 lesson; tempdir only; CPU-deterministic: device=cpu + fixed seed so the result
+    does NOT depend on GPU presence). Proves MACHINERY, NOT LEARNING -- one fwd + one delta-only
+    backprop runs without error, the weights MOVE after backward, state persists, and a SECOND
+    invocation trains only over newly-added delta nodes (incremental, not full retrain). The learning
+    signal is Tier 2 (empty until task flow), so nothing is asserted to have been *learned*."""
+    import tempfile
+    import ontology_gnn
+    d = Path(tempfile.mkdtemp(prefix="shimmer_oge62_"))
+    nodes = [
+        {"type": "Document", "id": "docA", "date_confidence": "high", "stub": False},
+        {"type": "Provision", "id": "docA::REF-1", "document_id": "docA", "ref_id": "REF-1",
+         "finding_type": "factual", "action": "flag", "severity": "high",
+         "context_refs": ["REF-9"], "original_text": "Article 5 text", "stub": False},
+        {"type": "Convention", "id": "CONV-001", "category": "review", "severity": "required",
+         "action": "flag", "rule": "operator rule"},
+    ]
+    edges = [
+        {"type": "HAS_PROVISION", "source_type": "Document", "source": "docA",
+         "target_type": "Provision", "target": "docA::REF-1"},
+        {"type": "GOVERNED_BY", "source_type": "Provision", "source": "docA::REF-1",
+         "target_type": "Convention", "target": "CONV-001"},
+    ]
+    gpath = d / "graph.json"
+    spath = d / "gnn_state.json"
+    gpath.write_text(json.dumps(_oge_gnn_graph(nodes, edges)), encoding="utf-8")
+
+    s1 = ontology_gnn.gnn_update(graph_path=str(gpath), state_path=str(spath), device="cpu",
+                                 seed=7, log=False)
+    if s1["nodes"] != 3 or s1["delta_size"] != 3:
+        return _fail(f"first run delta should equal all 3 nodes: {s1}")
+    if not (s1["weight_delta_norm"] > 0):
+        return _fail(f"weights did not move after backward (machinery did not run): {s1}")
+    if not spath.exists():
+        return _fail("gnn_state.json not persisted after first run")
+    st1 = json.loads(spath.read_text(encoding="utf-8"))
+    if st1.get("trained_count") != 3 or st1.get("n_updates") != 1:
+        return _fail(f"high-water mark not persisted correctly after first run: {st1.get('trained_count')}, "
+                     f"n_updates={st1.get('n_updates')}")
+
+    # SECOND invocation: add ONE new node. Delta must be exactly that node (incremental, not retrain).
+    nodes2 = nodes + [{"type": "SpeechAct", "id": "decide", "evidence_count": 2}]
+    edges2 = edges + [{"type": "EXHIBITS", "source_type": "Provision", "source": "docA::REF-1",
+                       "target_type": "SpeechAct", "target": "decide"}]
+    gpath.write_text(json.dumps(_oge_gnn_graph(nodes2, edges2)), encoding="utf-8")
+    s2 = ontology_gnn.gnn_update(graph_path=str(gpath), state_path=str(spath), device="cpu",
+                                 seed=7, log=False)
+    if s2["delta_size"] != 1:
+        return _fail(f"second run must train only the 1 newly-added node (got delta={s2['delta_size']})")
+    st2 = json.loads(spath.read_text(encoding="utf-8"))
+    if st2.get("trained_count") != 4 or st2.get("n_updates") != 2:
+        return _fail(f"incremental high-water mark wrong after second run: trained={st2.get('trained_count')}, "
+                     f"n_updates={st2.get('n_updates')}")
+    return _ok("OGE GNN EXECUTED (MACHINERY not learning): fwd+delta-backprop ran on CPU, weights moved "
+               f"(|dW|={s1['weight_delta_norm']:.4f}), state persisted; 2nd run trained only the 1 new "
+               "delta node (incremental, not full retrain)")
+
+
+def check_63_oge_gnn_payload_free():
+    """OGE build B3 BUILD INVARIANT: the GNN is payload-free. The feature matrix is built ONLY from
+    the SAFE allowlist; RAW fields never enter X or gnn_state. Proven three ways: (1) the SAFE
+    allowlist and the RAW field set are disjoint; (2) two provisions differing ONLY in RAW text
+    produce IDENTICAL feature rows (RAW does not affect features); (3) feeding a provision whose text
+    is [REDACTED:...] leaves the placeholder absent from both the feature matrix and the persisted
+    state. CPU-deterministic, tempdir only."""
+    import tempfile
+    import ontology_gnn
+    if ontology_gnn.SAFE_FEATURE_FIELDS & ontology_gnn.RAW_FIELDS:
+        return _fail(f"SAFE allowlist overlaps RAW fields: {ontology_gnn.SAFE_FEATURE_FIELDS & ontology_gnn.RAW_FIELDS}")
+
+    secret = "TOP SECRET provision body that must never enter features"
+    n_real = {"type": "Provision", "id": "p1", "document_id": "docA", "ref_id": "REF-1",
+              "finding_type": "factual", "action": "flag", "severity": "high",
+              "context_refs": [], "original_text": secret, "comment": secret, "stub": False}
+    n_masked = dict(n_real, id="p2", original_text="[REDACTED:PROVISION_TEXT]",
+                    comment="[REDACTED:ANALYST_COMMENT]")
+    g = _oge_gnn_graph([n_real, n_masked], [])
+    X, ids, _ = ontology_gnn.build_features(g)
+    # (2) identical SAFE features despite different RAW text
+    i1, i2 = ids.index("p1"), ids.index("p2")
+    import numpy as _np
+    if not _np.array_equal(X[i1], X[i2]):
+        return _fail("RAW text changed the SAFE feature row (payload leaked into features)")
+
+    d = Path(tempfile.mkdtemp(prefix="shimmer_oge63_"))
+    gpath = d / "graph.json"
+    spath = d / "gnn_state.json"
+    gpath.write_text(json.dumps(g), encoding="utf-8")
+    ontology_gnn.gnn_update(graph_path=str(gpath), state_path=str(spath), device="cpu", seed=3, log=False)
+    state_text = spath.read_text(encoding="utf-8")
+    for needle in (secret, "REDACTED", "original_text", "comment"):
+        if needle in state_text:
+            return _fail(f"payload/RAW token leaked into gnn_state.json: {needle!r}")
+    return _ok("OGE GNN payload-free: SAFE/RAW disjoint; RAW text does not change feature rows; "
+               "no raw or placeholder token in gnn_state (weights + structural metadata only)")
+
+
+def check_64_oge_gnn_wired_at_run_end():
+    """OGE build B3 wiring: the GNN runs at run-end, AFTER build_graph. WIRED (not dormant):
+    pipeline.main calls gnn_update after build_graph after capture_run (source-order check). WORKS
+    end-to-end (executed coverage): the full run-end sequence capture_run -> build_graph -> gnn_update
+    is reproduced on a tempdir and gnn_state.json is produced. CPU-deterministic, tempdir only,
+    non-mutating (never the real ontology/stores/*)."""
+    import inspect, tempfile
+    import pipeline, ontology_capture, ontology_graph, ontology_gnn
+    msrc = inspect.getsource(pipeline.main)
+    if "ontology_gnn" not in msrc or "gnn_update(" not in msrc:
+        return _fail("gnn_update not wired into pipeline.main (dormant)")
+    i_cap, i_build, i_gnn = msrc.find("capture_run("), msrc.find("build_graph("), msrc.find("gnn_update(")
+    if not (0 <= i_cap < i_build < i_gnn):
+        return _fail(f"run-end order must be capture_run < build_graph < gnn_update "
+                     f"(got {i_cap}, {i_build}, {i_gnn})")
+
+    # executed: reproduce the run-end sequence on a tempdir
+    d = Path(tempfile.mkdtemp(prefix="shimmer_oge64_"))
+    deliv = d / "deliv"; deliv.mkdir()
+    doc_id = "docX"
+    master = {"document_id": doc_id, "amendments": [
+        {"location": "REF-1", "convention_ref": "CONV-001", "context_refs": [],
+         "finding_type": "factual", "original_text": "some provision text", "proposed_text": None,
+         "action": "flag", "comment": "c", "severity": "high"}]}
+    (deliv / f"{doc_id}__amendments.json").write_text(json.dumps(master, ensure_ascii=False), encoding="utf-8")
+    (d / "delta_proposals.json").write_text(json.dumps({"generated_at": "t", "proposals": []}), encoding="utf-8")
+
+    class _RC:
+        run_id = "RUN-TEST-64"
+        def deliverables_dir(_self): return deliv
+        def delta_proposals_path(_self): return d / "delta_proposals.json"
+
+    op_docs = [{"id": doc_id, "name": doc_id}]
+    deliverables = {doc_id: {"amendments_json": str(deliv / f"{doc_id}__amendments.json")}}
+    stores = d / "stores"
+    ontology_capture.capture_run(_RC(), op_docs, deliverables, sensitive=False, stores_dir=str(stores))
+    out = d / "graph.json"
+    ontology_graph.build_graph(sources={"provisions": stores / "provisions.jsonl"}, out_path=str(out))
+    spath = d / "gnn_state.json"
+    s = ontology_gnn.gnn_update(graph_path=str(out), state_path=str(spath), device="cpu", seed=5, log=False)
+    if not spath.exists():
+        return _fail("run-end GNN sequence did not persist gnn_state.json")
+    if s["nodes"] < 1:
+        return _fail(f"run-end GNN saw no nodes from the rebuilt graph: {s}")
+    return _ok("run-end GNN WIRED + EXECUTED: pipeline.main calls gnn_update after build_graph after "
+               f"capture_run; reproduced sequence persisted gnn_state.json over {s['nodes']} nodes")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -1874,6 +2026,9 @@ CHECKS = [
     ("59 OGE Tier-1 ingest executed (nodes + edges + stub + derivable + no abs_path)", check_59_oge_ingest_executed),
     ("60 OGE ingest payload-free (masked text carried as-is; regex cannot match a placeholder)", check_60_oge_ingest_payload_free),
     ("61 OGE graph rebuilt at run-end (build_graph wired after capture_run)", check_61_oge_graph_rebuilt_at_run_end),
+    ("62 OGE GNN executed end-to-end (MACHINERY not learning: fwd+delta-backprop, weights move, incremental)", check_62_oge_gnn_executed),
+    ("63 OGE GNN payload-free (SAFE-only features; no RAW/placeholder in state)", check_63_oge_gnn_payload_free),
+    ("64 OGE GNN wired at run-end (gnn_update after build_graph after capture_run)", check_64_oge_gnn_wired_at_run_end),
 ]
 
 

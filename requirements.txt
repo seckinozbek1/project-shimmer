@@ -35,3 +35,9 @@ langdetect==1.0.9
 
 # Free web-search cascade (external reference discovery)
 ddgs==9.8.0
+
+# OGE GNN engine (build B3): local numeric compute over the Tier-1 knowledge graph.
+# GPU is OPTIONAL (warn-not-fail): runs on CPU when no CUDA device is present. The installed
+# build is the CUDA wheel (2.5.1+cu121); the pin follows the requirements.txt convention of the
+# bare PyPI version (no local build string). No model API calls -- this is local autograd only.
+torch==2.5.1
