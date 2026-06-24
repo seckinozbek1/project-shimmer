@@ -55,7 +55,13 @@ durable/governance/constitution_guard_log.jsonl
 durable/governance/redaction_waivers.jsonl
 durable/governance/sensitivity_overrides.jsonl
 
+# Local-only working prompt / job-spec files (scratch prompts, sequenced job specs).
+# The tracked project_rules.md is re-included below. `prompts/*` (not `prompts/`) so the
+# directory itself is not excluded and the re-include is honored.
+prompts/*
+
 # Re-includes (must come after the rules they negate)
+!prompts/project_rules.md
 !scripts/guard_secrets.py
 !**/.gitkeep
 # The conventions framework is the tracked source of truth (operator-authored rules
