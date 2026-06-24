@@ -1545,6 +1545,97 @@ def check_56_audit_synthesizer_wired():
                "delta_proposals/audit_synthesis via run_context, requires_operator_approval=True, no self-apply path")
 
 
+def check_57_oge_capture_wired():
+    """OGE build B1 (ontology/SCHEMA.md Q1): the capture-at-run-end hook is WIRED into the live
+    pipeline AND works. WIRED: pipeline.main imports ontology_capture and calls capture_run at
+    run-end (source check, so it is not a dormant scaffold). WORKS (executed coverage, the D7
+    lesson): capture_run runs against a synthetic finalized run writing to a TEMP store, and the
+    provisions + proposal accumulator receive the run's records with the right shapes (composite
+    id Q2, dedup-merge C1). Non-mutating: writes only to a tempdir, never the real ontology/stores."""
+    import inspect, tempfile
+    import pipeline, ontology_capture
+    msrc = inspect.getsource(pipeline.main)
+    for needle in ("ontology_capture", "capture_run("):
+        if needle not in msrc:
+            return _fail(f"capture hook not wired into pipeline.main: {needle!r} absent (dormant scaffold)")
+    d = Path(tempfile.mkdtemp(prefix="shimmer_oge57_"))
+    deliv = d / "deliv"; deliv.mkdir()
+    doc_id = "testdoc"
+    master = {"document_id": doc_id, "amendments": [
+        {"location": "REF-0001", "convention_ref": "CONV-001", "context_refs": ["REF-0009"],
+         "finding_type": "factual", "original_text": "raw provision text", "proposed_text": None,
+         "action": "flag", "comment": "analyst comment", "severity": "high"}]}
+    (deliv / f"{doc_id}__amendments.json").write_text(json.dumps(master, ensure_ascii=False), encoding="utf-8")
+    (d / "delta_proposals.json").write_text(json.dumps({"generated_at": "t", "proposals": [
+        {"id": "DELTA-1", "kind": "reduce_ttl", "trigger": "x", "evidence": {"k": "v"},
+         "proposed_change": {"target": "T", "action": "A"}, "requires_operator_approval": True,
+         "created_at": "t"}]}, ensure_ascii=False), encoding="utf-8")
+
+    class _RC:
+        run_id = "RUN-TEST-57"
+        def deliverables_dir(_self): return deliv
+        def delta_proposals_path(_self): return d / "delta_proposals.json"
+
+    op_docs = [{"id": doc_id, "name": doc_id}]
+    deliverables = {doc_id: {"amendments_json": str(deliv / f"{doc_id}__amendments.json")}}
+    res = ontology_capture.capture_run(_RC(), op_docs, deliverables, sensitive=False, stores_dir=str(d / "stores"))
+    if res.get("provisions_appended", 0) < 1:
+        return _fail(f"capture wrote no provisions: {res}")
+    if res.get("accumulator_size", 0) < 1:
+        return _fail(f"proposal accumulator empty after capture: {res}")
+    prov_lines = (d / "stores" / "provisions.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    prop_lines = (d / "stores" / "delta_proposals.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    if not prov_lines or not prop_lines:
+        return _fail("temp OGE stores did not receive records (capture inert)")
+    prov0 = json.loads(prov_lines[0])
+    if prov0.get("id") != f"{doc_id}::REF-0001":
+        return _fail(f"provision composite id wrong (Q2): {prov0.get('id')!r}")
+    if not any(json.loads(l).get("stub") for l in prov_lines):
+        return _fail("referenced-only REF not materialized as a stub node (Q3)")
+    prop0 = json.loads(prop_lines[0])
+    if prop0.get("occurrence_count") != 1 or prop0.get("status") != "proposed":
+        return _fail(f"accumulator fields missing (C1): {prop0}")
+    # dedup-merge: re-run the same proposal -> count increments, no duplicate line
+    ontology_capture.capture_run(_RC(), op_docs, deliverables, sensitive=False, stores_dir=str(d / "stores"))
+    prop2 = (d / "stores" / "delta_proposals.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    if len(prop2) != 1 or json.loads(prop2[0]).get("occurrence_count") != 2:
+        return _fail(f"dedup merge failed (C1): {len(prop2)} line(s), "
+                     f"counts {[json.loads(l).get('occurrence_count') for l in prop2]}")
+    return _ok("OGE capture hook WIRED into pipeline.main + EXECUTED: provisions appended (composite id Q2, "
+               "stub Q3), proposal accumulator merges by dedup key (count 1->2), status 'proposed'")
+
+
+def check_58_oge_masked_write_gate():
+    """OGE build B1 BUILD INVARIANT: the masked-write gate is keyed on sensitive mode.
+    Non-sensitive writes real content; sensitive writes a typed placeholder [REDACTED:TYPE].
+    Proven on the mask_field primitive AND end-to-end by capturing the same synthetic provision
+    under both modes: RAW fields (original_text/proposed_text/comment per SCHEMA table D) land
+    raw vs masked, while SAFE structural fields are never masked. Non-mutating (pure fn / no store write)."""
+    import ontology_capture
+    from ontology_capture import mask_field
+    if mask_field("secret", "PROVISION_TEXT", sensitive=False) != "secret":
+        return _fail("mask_field leaked: non-sensitive must pass real content through")
+    if mask_field("secret", "PROVISION_TEXT", sensitive=True) != "[REDACTED:PROVISION_TEXT]":
+        return _fail("mask_field did not emit a typed placeholder under sensitive mode")
+    if mask_field(None, "PROVISION_TEXT", sensitive=True) is not None:
+        return _fail("mask_field must pass None through (no placeholder for absent content)")
+    master = {"document_id": "doc", "amendments": [
+        {"location": "REF-1", "original_text": "RAW SOURCE TEXT", "proposed_text": "RAW PROPOSED",
+         "comment": "RAW COMMENT", "finding_type": "factual", "action": "flag", "severity": "high"}]}
+    clear = ontology_capture.capture_provisions(master, "RUN-CLEAR", sensitive=False)[0]
+    sens = ontology_capture.capture_provisions(master, "RUN-SENS", sensitive=True)[0]
+    if clear["original_text"] != "RAW SOURCE TEXT" or clear["comment"] != "RAW COMMENT":
+        return _fail("non-sensitive capture did not write real content")
+    for fld, typ in (("original_text", "PROVISION_TEXT"), ("proposed_text", "PROVISION_TEXT"),
+                     ("comment", "ANALYST_COMMENT")):
+        if sens[fld] != f"[REDACTED:{typ}]":
+            return _fail(f"sensitive capture did not mask RAW field {fld}: {sens[fld]!r}")
+    if sens["ref_id"] != "REF-1" or sens["document_id"] != "doc" or sens["severity"] != "high":
+        return _fail("sensitive mode masked a SAFE structural field (must not)")
+    return _ok("masked-write gate proven: non-sensitive writes real content; sensitive writes "
+               "[REDACTED:TYPE] for RAW fields (original_text/proposed_text/comment); SAFE fields untouched")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -1612,6 +1703,8 @@ CHECKS = [
     ("54 editorial board uses no operator ESCALATE path (intra-phase on the bus)", check_54_editorial_board_no_operator_escalate),
     ("55 editorial board output budget is config-resolved (no hardcoded 2048)", check_55_editorial_board_output_budget),
     ("56 audit synthesizer wired + proposal-side (cross-run learning loop)", check_56_audit_synthesizer_wired),
+    ("57 OGE capture hook wired + executed (provisions + proposal accumulator)", check_57_oge_capture_wired),
+    ("58 OGE masked-write gate (sensitive -> [REDACTED:TYPE], non-sensitive -> real)", check_58_oge_masked_write_gate),
 ]
 
 

@@ -39,6 +39,7 @@ from agent_wrapper import (AgentWrapper, load_api_keys, decode_items,
                            current_items, make_envelope, is_envelope)
 import amendment_render
 from audit_synthesizer import AuditSynthesizer
+import ontology_capture
 from convention_parser import parse_conventions, write_registry
 from sensitivity_layer import redaction_rules
 import sensitivity_layer
@@ -1628,7 +1629,22 @@ def main(argv=None):
     print(f"  TOTAL:    ${final['total_cost_usd']:.4f}", file=sys.stderr)
     print(f"  calls: {final['total_calls']}  failures: {final['total_failures']}", file=sys.stderr)
     print(f"  bus messages: {summary.get('total', 0)}", file=sys.stderr)
-    # LAW-IV: a redaction BLOCK must not be silent — fail the run so it surfaces.
+
+    # OGE capture-at-run-end (build B1; ontology/SCHEMA.md Q1). The run is finalized: append
+    # this run's provisions (amendments master) + DELTA proposals into the durable cross-run
+    # OGE stores under ontology/. Masked-write gate keyed on the pipeline's existing sensitive
+    # signal (run_is_non_sensitive = not redaction_enabled), so RAW fields are masked when the
+    # run is not declared non-sensitive. Best-effort: a capture failure never fails a completed run.
+    try:
+        oge = ontology_capture.capture_run(
+            run_ctx, op_docs, deliverables, sensitive=redaction_enabled)
+        print(f"[pipeline] OGE capture: +{oge['provisions_appended']} provisions; "
+              f"proposal accumulator={oge['accumulator_size']} (sensitive={oge['sensitive']})",
+              file=sys.stderr)
+    except Exception as e:
+        print(f"[pipeline] OGE capture skipped (non-fatal): {type(e).__name__}: {e}", file=sys.stderr)
+
+    # LAW-IV: a redaction BLOCK must not be silent, so fail the run so it surfaces.
     return 5 if n_blocked else 0
 
 
