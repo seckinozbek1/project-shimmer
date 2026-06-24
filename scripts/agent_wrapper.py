@@ -670,8 +670,8 @@ class AgentWrapper:
                     '"replacement": "[REDACTED]", "method": "REDACT", '
                     '"rule_id": "<id of the rule that matched, e.g. CONV-006 or RED-DFLT-001>", '
                     '"ref_ids": ["REF-0006"]}]}')
-        if self.name == "EDITOR":
-            return ('{"agent": "EDITOR", "doc_id": "<id>", "items": ['
+        if self.name.startswith("EDITOR"):
+            return ('{"agent": "' + self.name + '", "doc_id": "<id>", "items": ['
                     '{"ref": "REF-0003", "kind": "editorial_observation", "confidence": "CONFIDENT", '
                     '"verdict": "concern", '
                     '"rationale": "<prose: e.g. amendment 2 restates convention CONV-004 without adding analysis; '

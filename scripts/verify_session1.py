@@ -49,7 +49,9 @@ EXPECTED_AGENTS = {
     "PROCESSOR", "VERIFIER", "FACT_CHECKER", "PRACTICE_AUDITOR", "LEGAL_ANALYST",
     "STYLE_GUARDIAN", "ARCHIVIST", "INST_FINDER", "CITATION_RESOLVER",
     "SPEECH_ACT_TAGGER", "REDACTOR",
-    "AMENDMENT_DRAFTER", "EDITOR",
+    "AMENDMENT_DRAFTER", "EDITOR_CLERK",
+    "EDITOR_HEAD_OF_UNIT", "EDITOR_HEAD_OF_SECTION", "EDITOR_HEAD_OF_DEPARTMENT",
+    "EDITOR_DEPUTY_DG", "EDITOR_DG",
 }
 
 SEED_LAW_IDS = {"LAW-0", "LAW-I", "LAW-II", "LAW-III", "LAW-IV", "LAW-V", "LAW-VI"}
@@ -138,7 +140,7 @@ def check_03_agent_registry():
     for name, spec in agents.items():
         for k in ("does", "does_not", "model"):
             if k not in spec: return _fail(f"{name} missing {k!r}")
-    return _ok(f"{len(agents)} agents with DOES/DOES NOT/model (13 incl. AMENDMENT_DRAFTER + EDITOR)")
+    return _ok(f"{len(agents)} agents with DOES/DOES NOT/model (18 incl. AMENDMENT_DRAFTER + EDITOR_CLERK + 5 board ranks)")
 
 
 def check_04_contracts():
@@ -857,7 +859,7 @@ def check_38_embedding_store():
 
 def check_39_canonical_envelope():
     """INFRA-037: every agent's output payload is the canonical wrapper
-    {agent, doc_id, items:[flat items]}. For ALL 13 agents, a valid wrapper of one
+    {agent, doc_id, items:[flat items]}. For ALL 18 agents, a valid wrapper of one
     flat core-bearing item validates; a bare list, a bare dict, and an item with a
     nested object are all rejected; an empty items list is valid."""
     from agent_wrapper import AgentWrapper, is_envelope, decode_items
@@ -893,7 +895,7 @@ def check_39_canonical_envelope():
     _, m_empty = w.parse_contract_output(json.dumps({"agent": name, "doc_id": "d", "items": []}))
     bus_path.unlink(missing_ok=True)
     if m_empty: return _fail(f"empty items rejected: {m_empty}")
-    return _ok("all 13 agents enforce the canonical wrapper of flat core-bearing items")
+    return _ok("all 18 agents enforce the canonical wrapper of flat core-bearing items")
 
 
 def check_40_highest_revision():
@@ -1291,59 +1293,81 @@ def check_50_deterministic_detection_language_neutral():
 
 
 def check_51_editorial_structural():
-    """INFRA-039: EDITOR is the privacy-free editorial reviewer. Its registry entry is
-    claude_api / category editorial / web+sensitive both false; its contract constrains
-    verdict to EXACTLY {sound, concern, serious_concern} and requires ref+verdict+
-    rationale; its worked example is a valid INFRA-037 envelope carrying a verdict in the
-    set; the structural detector recognizes ref+verdict+rationale; and nothing about
-    EDITOR contains 'redact' in any spelling (editorial house is redaction-free)."""
+    """INFRA-040 BUILD C: the SIX-RANK editorial review board is privacy-free and FAMILY-SPLIT.
+    For ALL SIX ranks (EDITOR_CLERK, EDITOR_HEAD_OF_UNIT, EDITOR_HEAD_OF_SECTION,
+    EDITOR_HEAD_OF_DEPARTMENT, EDITOR_DEPUTY_DG, EDITOR_DG): present in registry + contracts +
+    EXPECTED_AGENTS; category editorial; may_use_web false; may_handle_sensitive false; contract
+    verdict constrained to EXACTLY {sound, concern, serious_concern} with required
+    ref+verdict+rationale; worked example a valid INFRA-037 envelope carrying a verdict in the
+    set and free of 'redact' in any spelling; and the rank NAME carries no 'redact'/'rédact'.
+    FAMILY SPLIT (the assertion that makes 'gate green' mean the 3/3 decorrelated split is
+    real): the bottom three ranks are backend claude_api, the top three are backend openai_api.
+    Plus the runtime structural detector + valid-verdict set, and no sensitivity_layer reference
+    anywhere in the board (phase + dispatch helper)."""
+    from agent_wrapper import AgentWrapper, is_envelope, decode_items
     reg = json.loads((CONFIG / "agent_registry.json").read_text(encoding="utf-8"))["agents"]
     con = json.loads((CONFIG / "agent_contracts.json").read_text(encoding="utf-8"))["contracts"]
-    if "EDITOR" not in reg or "EDITOR" not in con:
-        return _fail("EDITOR missing from registry/contracts")
-    spec = reg["EDITOR"]
-    if spec.get("backend") != "claude_api" or spec.get("category") != "editorial":
-        return _fail("EDITOR must be backend claude_api / category editorial")
-    if spec.get("may_use_web") or spec.get("may_handle_sensitive"):
-        return _fail("EDITOR must be may_use_web false and may_handle_sensitive false (privacy-free)")
-    c = con["EDITOR"]
-    vfield = str(c.get("fields", {}).get("verdict", "")).lower()
-    for v in ("sound", "concern", "serious_concern"):
-        if v not in vfield:
-            return _fail(f"EDITOR contract verdict field does not document '{v}'")
-    if not {"ref", "verdict", "rationale"} <= set(c.get("required", [])):
-        return _fail("EDITOR contract required must include ref, verdict, rationale")
-    # worked example: valid canonical envelope, verdict in the set, redaction-free
-    from agent_wrapper import AgentWrapper, is_envelope, decode_items
-    class _S: pass
-    s = _S(); s.name = "EDITOR"; s.contract = {"fields": {}, "required": []}
-    s._worked_item_example = AgentWrapper._worked_item_example.__get__(s)
-    ex = s._worked_item_example()
-    if "redact" in ex.lower():
-        return _fail("EDITOR worked example contains 'redact' (editorial house must be redaction-free)")
-    obj = json.loads(ex)
-    if not is_envelope(obj):
-        return _fail("EDITOR worked example is not the canonical INFRA-037 envelope")
-    its = decode_items(obj)
-    if not its or str(its[0].get("verdict", "")).lower() not in ("sound", "concern", "serious_concern"):
-        return _fail("EDITOR worked example verdict is not in the valid set")
-    # runtime structural detector + valid-verdict set (editorial house, no privacy mechanic)
-    from pipeline import _is_editorial_observation, _EDITORIAL_VALID_VERDICTS
-    if set(_EDITORIAL_VALID_VERDICTS) != {"sound", "concern", "serious_concern"}:
+    claude_ranks = ("EDITOR_CLERK", "EDITOR_HEAD_OF_UNIT", "EDITOR_HEAD_OF_SECTION")
+    gpt_ranks = ("EDITOR_HEAD_OF_DEPARTMENT", "EDITOR_DEPUTY_DG", "EDITOR_DG")
+    expected_backend = {**{r: "claude_api" for r in claude_ranks},
+                        **{r: "openai_api" for r in gpt_ranks}}
+    valid_set = {"sound", "concern", "serious_concern"}
+    for rank, want_backend in expected_backend.items():
+        if "redact" in rank.lower() or "rédact" in rank.lower():
+            return _fail(f"{rank}: editorial rank NAME contains 'redact' (editorial house must be redaction-free)")
+        if rank not in reg or rank not in con:
+            return _fail(f"{rank} missing from registry/contracts")
+        if rank not in EXPECTED_AGENTS:
+            return _fail(f"{rank} missing from EXPECTED_AGENTS")
+        spec = reg[rank]
+        if spec.get("category") != "editorial":
+            return _fail(f"{rank} must be category editorial")
+        if spec.get("may_use_web") or spec.get("may_handle_sensitive"):
+            return _fail(f"{rank} must be may_use_web false and may_handle_sensitive false (privacy-free)")
+        if spec.get("backend") != want_backend:
+            return _fail(f"FAMILY SPLIT broken: {rank} backend={spec.get('backend')!r} (expected {want_backend})")
+        c = con[rank]
+        vfield = str(c.get("fields", {}).get("verdict", "")).lower()
+        for v in valid_set:
+            if v not in vfield:
+                return _fail(f"{rank} contract verdict field does not document '{v}'")
+        if not {"ref", "verdict", "rationale"} <= set(c.get("required", [])):
+            return _fail(f"{rank} contract required must include ref, verdict, rationale")
+        # worked example: valid canonical envelope, verdict in the set, redaction-free
+        class _S: pass
+        s = _S(); s.name = rank; s.contract = {"fields": {}, "required": []}
+        s._worked_item_example = AgentWrapper._worked_item_example.__get__(s)
+        ex = s._worked_item_example()
+        if "redact" in ex.lower():
+            return _fail(f"{rank} worked example contains 'redact' (editorial house must be redaction-free)")
+        obj = json.loads(ex)
+        if not is_envelope(obj):
+            return _fail(f"{rank} worked example is not the canonical INFRA-037 envelope")
+        its = decode_items(obj)
+        if not its or str(its[0].get("verdict", "")).lower() not in valid_set:
+            return _fail(f"{rank} worked example verdict is not in the valid set")
+    # runtime structural detector + valid-verdict set + the ladder order (editorial house)
+    from pipeline import _is_editorial_observation, _EDITORIAL_VALID_VERDICTS, _EDITORIAL_RANKS
+    if set(_EDITORIAL_VALID_VERDICTS) != valid_set:
         return _fail("editorial valid-verdict set is not exactly {sound, concern, serious_concern}")
+    if tuple(_EDITORIAL_RANKS) != claude_ranks + gpt_ranks:
+        return _fail(f"_EDITORIAL_RANKS ladder mismatch: {tuple(_EDITORIAL_RANKS)}")
     if not _is_editorial_observation({"ref": "REF-1", "verdict": "concern", "rationale": "x"}):
         return _fail("structural detection missed a ref+verdict+rationale observation")
     if _is_editorial_observation({"ref": "R", "verdict": "concern"}):
         return _fail("structural detection accepted an observation missing rationale")
     import inspect
-    from pipeline import phase_6_5_editorial_review
-    if "sensitivity_layer" in inspect.getsource(phase_6_5_editorial_review):
-        return _fail("editorial phase references sensitivity_layer (must reuse no privacy mechanic)")
-    return _ok("EDITOR privacy-free; verdict constrained to {sound,concern,serious_concern}; envelope+example valid; redaction-free")
+    from pipeline import phase_6_5_editorial_review, _dispatch_rank
+    board_src = inspect.getsource(phase_6_5_editorial_review) + inspect.getsource(_dispatch_rank)
+    if "sensitivity_layer" in board_src:
+        return _fail("editorial board references sensitivity_layer (must reuse no privacy mechanic)")
+    return _ok("six-rank board privacy-free; FAMILY SPLIT verified (3 claude_api: CLERK/UNIT/SECTION + "
+               "3 openai_api: DEPARTMENT/DEPUTY_DG/DG); verdict set {sound,concern,serious_concern}; "
+               "envelopes valid; redaction-free")
 
 
 def check_52_editorial_ordering():
-    """INFRA-039 ordering guarantee: EDITOR (phase 6.5) runs in execution order AFTER
+    """INFRA-039 ordering guarantee: EDITOR_CLERK (phase 6.5) runs in execution order AFTER
     phase_6_synthesis (which runs AMENDMENT_DRAFTER, the last editorial producer) and
     BEFORE phase 7 and BEFORE the phase 9 privacy scrub, reading the CLEAN pre-scrub
     master. Enforced by source-order introspection of pipeline.main plus the editorial
@@ -1365,7 +1389,104 @@ def check_52_editorial_ordering():
     # write the master file). Checked on real mutation patterns, not on docstring words.
     if "master.clear" in esrc or "master.update" in esrc or ".write_text" in esrc:
         return _fail("editorial phase mutates the master (must be advisory: clean read, no master write)")
-    return _ok("EDITOR ordered after synthesis (AMENDMENT_DRAFTER) and before phase 7 + phase 9 scrub; reads clean master; advisory")
+    return _ok("EDITOR_CLERK ordered after synthesis (AMENDMENT_DRAFTER) and before phase 7 + phase 9 scrub; reads clean master; advisory")
+
+
+def check_53_editorial_board_bounded():
+    """INFRA-040: the rank-to-rank escalation loop is PROVABLY bounded. By source inspection,
+    phase_6_5_editorial_review reads max_rounds from the resolved board tunables and breaks
+    at/over the cap (rounds >= max_rounds -> terminal) BEFORE incrementing the rank, so the
+    climb can never run forever. The operator config carries max_rounds (default 5),
+    confidence_threshold, and out_of_mandate_trigger, and the resolver default for max_rounds
+    is 5. Removing the cap guard (or moving it after the increment) FAILS this check."""
+    import inspect
+    from pipeline import phase_6_5_editorial_review, _EDITORIAL_BOARD_DEFAULTS
+    src = inspect.getsource(phase_6_5_editorial_review)
+    if 'tunables.get("max_rounds"' not in src and "tunables.get('max_rounds'" not in src:
+        return _fail("loop does not read max_rounds from the resolved board tunables")
+    if "rounds >= max_rounds" not in src:
+        return _fail("loop has no `rounds >= max_rounds` cap guard (unbounded climb risk)")
+    # the cap guard must PRECEDE the rank increment (guard before climb, never after)
+    i_guard = src.find("rounds >= max_rounds")
+    i_climb = src.find("rank_idx += 1")
+    if not (0 <= i_guard < i_climb):
+        return _fail("cap guard does not precede the rank increment (a climb could bypass the cap)")
+    # operator config present + carries the three tunables; resolver default max_rounds is 5
+    cfg_path = CONFIG / "editorial_board.json"
+    if not cfg_path.exists():
+        return _fail("config/editorial_board.json missing (operator tunables)")
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        return _fail(f"editorial_board.json invalid JSON: {e}")
+    for k in ("max_rounds", "confidence_threshold", "out_of_mandate_trigger"):
+        if k not in cfg:
+            return _fail(f"editorial_board.json missing tunable {k!r}")
+    if not isinstance(cfg["max_rounds"], int) or cfg["max_rounds"] < 1:
+        return _fail(f"editorial_board.json max_rounds must be a positive int, got {cfg['max_rounds']!r}")
+    if _EDITORIAL_BOARD_DEFAULTS.get("max_rounds") != 5:
+        return _fail(f"resolver default max_rounds expected 5, got {_EDITORIAL_BOARD_DEFAULTS.get('max_rounds')!r}")
+    return _ok(f"bounded loop: `rounds>=max_rounds` cap before the climb; config max_rounds="
+               f"{cfg['max_rounds']} (default 5), confidence_threshold={cfg['confidence_threshold']}, "
+               f"out_of_mandate_trigger={cfg['out_of_mandate_trigger']}")
+
+
+def check_54_editorial_board_no_operator_escalate():
+    """INFRA-040: rank-to-rank escalation is intra-phase on the bus and must NEVER use the
+    operator-escalation path (orchestrator.escalate_to_operator / _collect_operator_decision /
+    escalate_delta_proposals), which blocks on a human. By AST inspection of the board (phase +
+    its helpers), assert NO actual call to those names. AST (not substring) so a comment or
+    docstring mentioning the avoidance is fine; only a real call FAILS."""
+    import inspect
+    import pipeline
+    targets = ("phase_6_5_editorial_review", "_dispatch_rank", "_observation_triggers_escalation",
+               "_consolidate_board", "_rank_run_objectives", "_resolve_editorial_board")
+    forbidden = {"escalate_to_operator", "_collect_operator_decision", "escalate_delta_proposals"}
+    for name in targets:
+        fn = getattr(pipeline, name)
+        tree = ast.parse(inspect.getsource(fn))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in forbidden:
+                return _fail(f"{name} calls operator-escalation '.{node.attr}()' (must stay intra-phase on the bus)")
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in forbidden:
+                return _fail(f"{name} calls operator-escalation '{node.func.id}()'")
+    return _ok("editorial board uses NO operator ESCALATE path (rank-to-rank stays intra-phase on the bus; "
+               "AST-checked across the phase + 5 board helpers)")
+
+
+def check_55_editorial_board_output_budget():
+    """INFRA-040 Build F: the board's per-rank output budget is CONFIG-RESOLVED, not a hardcoded
+    2048. Upper ranks re-review all accumulated lower-rank observations, so their output grows
+    with rank; the stage-1 single-reviewer budget (2048) truncated them -> contract_violation ->
+    loud EDITORIAL_FAILED on every escalation. This check makes a regression to the hardcoded
+    value FAIL the gate: _dispatch_rank must pass `max_tokens=max_tokens` (the resolved budget)
+    and must NOT contain `max_tokens=2048`; the phase must resolve it from the tunables; and
+    config/editorial_board.json + the resolver default must carry a max_tokens above the old
+    2048. (The silent-pass guard still fires on genuine truncation; this only proves the budget
+    is no longer hardcoded.)"""
+    import inspect
+    from pipeline import _dispatch_rank, phase_6_5_editorial_review, _EDITORIAL_BOARD_DEFAULTS
+    dsrc = inspect.getsource(_dispatch_rank)
+    if "max_tokens=2048" in dsrc:
+        return _fail("_dispatch_rank still hardcodes max_tokens=2048 (board will truncate on escalation)")
+    if "max_tokens=max_tokens" not in dsrc:
+        return _fail("_dispatch_rank does not pass the resolved board budget (max_tokens=max_tokens)")
+    psrc = inspect.getsource(phase_6_5_editorial_review)
+    if 'tunables.get("max_tokens"' not in psrc and "tunables.get('max_tokens'" not in psrc:
+        return _fail("phase does not resolve max_tokens from the board tunables")
+    cfg_path = CONFIG / "editorial_board.json"
+    if not cfg_path.exists():
+        return _fail("config/editorial_board.json missing")
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    if "max_tokens" not in cfg:
+        return _fail("editorial_board.json missing tunable 'max_tokens'")
+    if not isinstance(cfg["max_tokens"], int) or cfg["max_tokens"] <= 2048:
+        return _fail(f"editorial_board.json max_tokens must be an int > 2048, got {cfg['max_tokens']!r}")
+    dflt = _EDITORIAL_BOARD_DEFAULTS.get("max_tokens")
+    if not isinstance(dflt, int) or dflt <= 2048:
+        return _fail(f"resolver default max_tokens must be an int > 2048, got {dflt!r}")
+    return _ok(f"board output budget is config-resolved (no hardcoded 2048): config max_tokens="
+               f"{cfg['max_tokens']}, resolver default={dflt}; silent-pass guard still fires on genuine truncation")
 
 
 def ast_parse_all_modules():
@@ -1381,7 +1502,7 @@ CHECKS = [
     ("00 ast.parse on all modules", ast_parse_all_modules),
     ("01 Directory structure", check_01_directory),
     ("02 constitution.json has 7 seed laws", check_02_constitution),
-    ("03 agent_registry.json has 13 agents", check_03_agent_registry),
+    ("03 agent_registry.json has 18 agents", check_03_agent_registry),
     ("04 agent_contracts.json has schemas", check_04_contracts),
     ("05 constitution.check() against 4 layers", check_05_constitution_check),
     ("06 match_tf_law() returns confidence", check_06_match_tf_law),
@@ -1429,8 +1550,11 @@ CHECKS = [
     ("48 qwen_local shares one resident model per model_id", check_48_qwen_shared_model_cache),
     ("49 no silent default redaction floor (operator-sovereignty)", check_49_no_silent_default_floor),
     ("50 deterministic detection, authorized-only + language-neutral", check_50_deterministic_detection_language_neutral),
-    ("51 EDITOR editorial structural (verdict set, envelope, redaction-free)", check_51_editorial_structural),
-    ("52 EDITOR ordering: after AMENDMENT_DRAFTER, before phase 9 scrub (clean master)", check_52_editorial_ordering),
+    ("51 editorial board structural: six ranks + FAMILY SPLIT (3 claude/3 gpt), verdict set, redaction-free", check_51_editorial_structural),
+    ("52 EDITOR_CLERK ordering: after AMENDMENT_DRAFTER, before phase 9 scrub (clean master)", check_52_editorial_ordering),
+    ("53 editorial board escalation loop is bounded (max_rounds cap before climb)", check_53_editorial_board_bounded),
+    ("54 editorial board uses no operator ESCALATE path (intra-phase on the bus)", check_54_editorial_board_no_operator_escalate),
+    ("55 editorial board output budget is config-resolved (no hardcoded 2048)", check_55_editorial_board_output_budget),
 ]
 
 

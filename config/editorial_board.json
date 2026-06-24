@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.1.0",
+  "description": "Operator tunables for the editorial review board (INFRA-040). Source of truth, tracked (operator config, not generated output). max_rounds caps the number of rank-to-rank escalation climbs per deliverable (after the cap a terminal decision is rendered at the highest rank reached). confidence_threshold: a rank escalates when its observation's confidence is below this value (categorical model confidence maps CONFIDENT->1.0, UNCERTAIN->0.4). out_of_mandate_trigger: when true, a rank may set out_of_mandate on an observation to escalate regardless of confidence. max_tokens: per-rank output budget; upper ranks re-review ALL accumulated lower-rank observations so their output grows with rank — 8192 fits the largest expected accumulated review (proven). If a rank STILL exceeds this ceiling its output truncates, parsing fails, and the silent-pass guard fires a LOUD editorial-review-failed (advisory): raising the budget reduces that failure, it must never mask a genuine truncation as success.",
+  "max_rounds": 5,
+  "confidence_threshold": 0.7,
+  "out_of_mandate_trigger": true,
+  "max_tokens": 8192
+}

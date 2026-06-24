@@ -88,11 +88,46 @@
       "model": "claude-opus-4-8", "backend": "claude_api",
       "category": "amendment", "may_use_web": false, "may_handle_sensitive": false
     },
-    "EDITOR": {
+    "EDITOR_CLERK": {
       "does": ["Conduct senior editorial review of the assembled deliverable's substance and drafting (soundness, internal coherence, necessity, and the quality of the amendments and analysis)",
                 "Emit advisory editorial observations, one per item, each carrying a verdict and a prose rationale"],
       "does_not": ["Modify the deliverable or the amendments master", "Gate whether the deliverable ships (advisory only)", "Mask, detect PII, or scrub (no privacy function)", "Use the web"],
       "model": "claude-opus-4-8", "backend": "claude_api", "category": "editorial",
+      "may_use_web": false, "may_handle_sensitive": false
+    },
+    "EDITOR_HEAD_OF_UNIT": {
+      "does": ["Review the drafting and soundness of an editorial observation escalated from EDITOR_CLERK, at provision-and-neighbors scope",
+                "Confirm, override, or escalate the lower rank's editorial verdict, emitting one observation per item with a verdict and a prose rationale"],
+      "does_not": ["Modify the deliverable or the amendments master", "Gate whether the deliverable ships (advisory only)", "Mask, detect PII, or scrub (no privacy function)", "Use the web"],
+      "model": "claude-opus-4-8", "backend": "claude_api", "category": "editorial",
+      "may_use_web": false, "may_handle_sensitive": false
+    },
+    "EDITOR_HEAD_OF_SECTION": {
+      "does": ["Review the drafting and soundness of an editorial observation escalated from EDITOR_HEAD_OF_UNIT, at provision-and-neighbors scope",
+                "Confirm, override, or escalate the lower rank's editorial verdict, emitting one observation per item with a verdict and a prose rationale"],
+      "does_not": ["Modify the deliverable or the amendments master", "Gate whether the deliverable ships (advisory only)", "Mask, detect PII, or scrub (no privacy function)", "Use the web"],
+      "model": "claude-opus-4-8", "backend": "claude_api", "category": "editorial",
+      "may_use_web": false, "may_handle_sensitive": false
+    },
+    "EDITOR_HEAD_OF_DEPARTMENT": {
+      "does": ["Review the whole-deliverable coherence of the assembled deliverable on escalation from EDITOR_HEAD_OF_SECTION",
+                "Confirm, override, or escalate the lower rank's editorial verdict, emitting one observation per item with a verdict and a prose rationale"],
+      "does_not": ["Modify the deliverable or the amendments master", "Gate whether the deliverable ships (advisory only)", "Mask, detect PII, or scrub (no privacy function)", "Use the web"],
+      "model": "gpt-4o", "backend": "openai_api", "category": "editorial",
+      "may_use_web": false, "may_handle_sensitive": false
+    },
+    "EDITOR_DEPUTY_DG": {
+      "does": ["Assess the necessity and proportionality of the deliverable's content on escalation from EDITOR_HEAD_OF_DEPARTMENT",
+                "Confirm, override, or escalate the lower rank's editorial verdict, emitting one observation per item with a verdict and a prose rationale"],
+      "does_not": ["Modify the deliverable or the amendments master", "Gate whether the deliverable ships (advisory only)", "Mask, detect PII, or scrub (no privacy function)", "Use the web"],
+      "model": "gpt-4o", "backend": "openai_api", "category": "editorial",
+      "may_use_web": false, "may_handle_sensitive": false
+    },
+    "EDITOR_DG": {
+      "does": ["Decide the existential editorial question — whether the content is needed at all — when summoned as the highest rank",
+                "Render the board's terminal editorial verdict, emitting one observation per item with a verdict and a prose rationale"],
+      "does_not": ["Modify the deliverable or the amendments master", "Gate whether the deliverable ships (advisory only)", "Mask, detect PII, or scrub (no privacy function)", "Use the web"],
+      "model": "gpt-4o", "backend": "openai_api", "category": "editorial",
       "may_use_web": false, "may_handle_sensitive": false
     }
   }

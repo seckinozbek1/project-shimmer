@@ -764,7 +764,7 @@ def _category_for_conv(conv_id, registry):
 
 # ---------- EDITORIAL review house (INFRA-039) ----------------------------------------------
 # Privacy-free. Imports NOTHING from sensitivity_layer and reuses no privacy mechanic.
-# The single EDITOR agent gives an ADVISORY senior editorial review of the assembled
+# The single EDITOR_CLERK agent gives an ADVISORY senior editorial review of the assembled
 # deliverable. It NEVER masks/detects/scrubs, NEVER modifies the master, and NEVER gates
 # shipping. No name here contains "redact" in any spelling.
 
@@ -792,34 +792,201 @@ def _post_editorial(orch, doc_id, event, body):
                             "resolution": "advisory editorial review of the assembled deliverable"})
 
 
-def _persist_editor_output(run_ctx, doc_id, payload) -> "str | None":
-    """Persist EDITOR's raw + parsed output on EVERY path (normal, all-sound,
-    failed-parse, skipped-sensitive), so the review is diagnosable from disk. Writes
-    into the run audit dir under editorial/. Best-effort; never raises."""
+def _persist_rank_output(run_ctx, doc_id, name, payload) -> "str | None":
+    """Persist a rank's (or the consolidated board's) output on EVERY path (normal,
+    all-sound, failed-parse, skipped-sensitive), PER RANK, so the board is diagnosable
+    from disk (INFRA-040 borrowed doctrine: raw persisted on every path AND per rank).
+    Writes into the run audit dir under editorial/ as <name>_<doc_id>.json. Best-effort;
+    never raises."""
     if run_ctx is None:
         return None
     try:
         out_dir = run_ctx.audit_dir() / "editorial"
         out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"EDITOR_{doc_id}.json"
+        path = out_dir / f"{name}_{doc_id}.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return str(path)
     except Exception:
         return None
 
 
-def _append_editorial_to_deliverable(info, observations):
-    """Append an advisory EDITOR section to the existing per-agent __deliverable.md.
-    Does NOT touch the amendments master (advisory annotation only). Best-effort."""
+# ---------- editorial review BOARD: the bounded rank-to-rank loop (INFRA-040 Build B) -------
+# Privacy-free intra-phase control flow on the run bus ONLY. It does NOT use the operator-
+# escalation ESCALATE path (orchestrator.escalate_to_operator), which blocks on a human; the
+# board never blocks on the operator. Dispatch is purely registry-driven (claude_api ranks ->
+# call_claude, openai_api ranks -> call_gpt); no rank name is special-cased anywhere here.
+
+# Ascending authority. Bottom three are Claude, top three GPT (set in the registry).
+_EDITORIAL_RANKS = ("EDITOR_CLERK", "EDITOR_HEAD_OF_UNIT", "EDITOR_HEAD_OF_SECTION",
+                    "EDITOR_HEAD_OF_DEPARTMENT", "EDITOR_DEPUTY_DG", "EDITOR_DG")
+
+# Per-rank mandate (widening in-house scope; NO web at ANY rank, including DG).
+_RANK_MANDATE = {
+    "EDITOR_CLERK": "editorial review of drafting and soundness at provision-and-neighbors scope",
+    "EDITOR_HEAD_OF_UNIT": "editorial review of drafting and soundness at provision-and-neighbors scope",
+    "EDITOR_HEAD_OF_SECTION": "editorial review of drafting and soundness at provision-and-neighbors scope",
+    "EDITOR_HEAD_OF_DEPARTMENT": "whole-deliverable coherence",
+    "EDITOR_DEPUTY_DG": "the necessity and proportionality of the deliverable's content",
+    "EDITOR_DG": "the existential question: do we need this content at all?",
+}
+
+# Operator tunables (config/editorial_board.json); defaults used if the file is absent.
+_EDITORIAL_BOARD_DEFAULTS = {"max_rounds": 5, "confidence_threshold": 0.7,
+                             "out_of_mandate_trigger": True, "max_tokens": 8192}
+
+# Categorical model confidence -> numeric, so the operator's numeric threshold applies.
+_CONFIDENCE_LABELS = {"CONFIDENT": 1.0, "UNCERTAIN": 0.4}
+
+
+def _resolve_editorial_board(project_root: Path) -> dict:
+    """Load config/editorial_board.json (operator tunables), mirroring _resolve_review_scope.
+    Falls back to _EDITORIAL_BOARD_DEFAULTS for any missing/invalid key (no silent surprise:
+    the defaults match the ratified INFRA-040 values)."""
+    path = project_root / "config" / "editorial_board.json"
+    cfg = dict(_EDITORIAL_BOARD_DEFAULTS)
+    if not path.exists():
+        return cfg
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return cfg
+    for k in _EDITORIAL_BOARD_DEFAULTS:
+        if k in data:
+            cfg[k] = data[k]
+    return cfg
+
+
+def _confidence_value(it) -> float:
+    """Numeric confidence for an observation. Accepts a number, a numeric string, or the
+    categorical labels (CONFIDENT|UNCERTAIN). Unknown/missing -> treated as confident (1.0)
+    so the board does not over-escalate on a malformed confidence (parsimony)."""
+    raw = it.get("confidence")
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    s = str(raw).strip()
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return _CONFIDENCE_LABELS.get(s.upper(), 1.0)
+
+
+def _observation_triggers_escalation(observations, tunables):
+    """The TWO ratified summon triggers (and ONLY these): (a) any observation's confidence
+    is below the operator threshold, or (b) an observation raises an explicit out_of_mandate
+    flag (only when the operator enables that trigger). Returns (triggered, reason)."""
+    thr = float(tunables.get("confidence_threshold", 0.7))
+    for it in observations:
+        if _confidence_value(it) < thr:
+            return True, f"confidence<{thr}"
+    if tunables.get("out_of_mandate_trigger", True):
+        for it in observations:
+            if bool(it.get("out_of_mandate")):
+                return True, "out_of_mandate"
+    return False, ""
+
+
+def _rank_run_objectives(rank, prior_obs):
+    """Per-rank prompt. The entry rank reviews fresh; a summoned higher rank reads the
+    accumulated lower-rank observation(s) + rationale (it does NOT recompute from scratch)
+    and confirms / overrides / escalates. Its verdict governs; the lower rank is preserved."""
+    mandate = _RANK_MANDATE[rank]
+    base = ("Emit ONE observation per item, each with: ref (what you comment on), verdict "
+            "(EXACTLY one of 'sound', 'concern', 'serious_concern'), rationale (your editorial "
+            "reasoning in prose), and confidence (CONFIDENT or UNCERTAIN). If a matter is "
+            "outside your mandate, additionally set out_of_mandate true on that item. If you "
+            "have no concerns, emit one item with verdict 'sound'. You ANNOTATE only; you do "
+            "NOT modify the deliverable and you do NOT mask, detect, or scrub anything.")
+    if not prior_obs:
+        return (f"You are {rank}, the entry rank of the editorial review board. Your mandate: "
+                f"{mandate}. Conduct a senior editorial review of the assembled deliverable's "
+                f"SUBSTANCE and DRAFTING. " + base)
+    prior_txt = "\n".join(
+        f"- [{o.get('rank')}] {o.get('ref')}: verdict={o.get('verdict')} — {o.get('rationale')}"
+        for o in prior_obs)
+    return (f"You are {rank}, a senior rank of the editorial review board, summoned on "
+            f"escalation. Your mandate: {mandate}. A lower rank escalated; read their "
+            f"observation(s) and rationale below and CONFIRM, OVERRIDE, or escalate further. "
+            f"Your verdict GOVERNS the outcome; the lower rank's observation is preserved, not "
+            f"deleted.\nPRIOR OBSERVATIONS (accumulating state, lowest rank first):\n"
+            f"{prior_txt}\n\n" + base)
+
+
+def _dispatch_rank(orch, keys, rank, doc, master, prior_passes, run_ctx, convention_registry,
+                   max_tokens):
+    """Dispatch ONE rank (registry-driven backend; no name special-casing), persist its raw
+    output per rank on every path, and run the stage-1 silent-pass guard + structural
+    detection. Returns (ok, observations, raw_path, error). The output budget `max_tokens` is
+    the board tunable resolved from config/editorial_board.json (NOT a hardcoded value): upper
+    ranks re-review ALL accumulated lower-rank observations, so their output grows with rank
+    and the stage-1 single-reviewer budget truncated them (INFRA-040 Build F). If a rank STILL
+    exceeds this ceiling, its output truncates and the guard below fires a LOUD failure -- the
+    larger budget reduces truncation, it does NOT mask a genuine one as success."""
+    prior_obs = [{"rank": p["rank"], "ref": o.get("ref"), "verdict": o.get("verdict"),
+                  "rationale": o.get("rationale"), "confidence": o.get("confidence")}
+                 for p in prior_passes for o in p["observations"]]
+    wrapper = _build_wrapper(rank, orch, keys)
+    result = wrapper.run_task(
+        work_payload={"task": "editorial_review", "document_id": doc["id"],
+                      "document_name": doc["name"],
+                      "amendments_master": master.get("amendments", []),
+                      "prior_observations": prior_obs},
+        run_objectives=_rank_run_objectives(rank, prior_obs),
+        channel="main", max_tokens=max_tokens, convention_registry=convention_registry)
+    raw_path = _persist_rank_output(run_ctx, doc["id"], rank, {
+        "state": "RAW", "rank": rank, "ok": result.get("ok"), "error": result.get("error"),
+        "parsed": result.get("parsed"), "raw_text": result.get("raw_text", "")})
+    items = (decode_items(result.get("parsed"))
+             if (result.get("ok") and is_envelope(result.get("parsed"))) else [])
+    obs = [it for it in items if _is_editorial_observation(it)]
+    valid = bool(obs) and all(
+        str(it.get("verdict", "")).strip().lower() in _EDITORIAL_VALID_VERDICTS for it in obs)
+    ok = bool(result.get("ok") and valid)
+    error = None if ok else (result.get("error") or "no valid editorial observation")
+    return ok, obs, raw_path, error
+
+
+def _consolidate_board(passes):
+    """Group every observation by ref across all ranks that ran. AUTHORITY BY RANK: the
+    highest rank that touched a ref GOVERNS it (passes are appended lowest-first, so the last
+    entry in a ref's chain is the governing one). Lower-rank observations are RETAINED as
+    'superseded', never dropped (conserve-or-surface). Returns a list, one entry per ref."""
+    by_ref, order = {}, []
+    for p in passes:
+        for o in p["observations"]:
+            ref = str(o.get("ref", ""))
+            rec = {"rank": p["rank"], "verdict": o.get("verdict"),
+                   "verdict_l": str(o.get("verdict", "")).strip().lower(),
+                   "rationale": o.get("rationale"), "confidence": o.get("confidence")}
+            if ref not in by_ref:
+                by_ref[ref] = []
+                order.append(ref)
+            by_ref[ref].append(rec)
+    consolidated = []
+    for ref in order:
+        chain = by_ref[ref]
+        consolidated.append({"ref": ref, "governing": chain[-1],
+                             "superseded": chain[:-1], "chain": chain})
+    return consolidated
+
+
+def _append_board_to_deliverable(info, consolidated):
+    """Append the advisory editorial-board section to the per-agent __deliverable.md,
+    grouping observations by ref: per ref it shows the GOVERNING verdict and the rank that
+    set it, plus any SUPERSEDED lower-rank verdict (visible, not dropped). Does NOT touch the
+    amendments master (advisory annotation only). Best-effort."""
     p = info.get("per_agent_deliverable")
     if not p or not Path(p).exists():
         return
     try:
-        lines = ["", "## EDITOR (advisory editorial review)", ""]
-        if not observations:
+        lines = ["", "## Editorial review board (advisory)", ""]
+        if not consolidated:
             lines.append("_(no observations)_")
-        for it in observations:
-            lines.append(f"- **{it.get('verdict')}** [{it.get('ref')}]: {it.get('rationale')}")
+        for c in consolidated:
+            g = c["governing"]
+            lines.append(f"- **{g['verdict']}** [{c['ref']}] — governing rank: {g['rank']}")
+            lines.append(f"    - {g['rank']}: {g['rationale']}")
+            for s in c["superseded"]:
+                lines.append(f"    - (superseded) {s['rank']} -> {s['verdict']}: {s['rationale']}")
         with Path(p).open("a", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
     except Exception:
@@ -827,32 +994,50 @@ def _append_editorial_to_deliverable(info, observations):
 
 
 def phase_6_5_editorial_review(orch, keys, op_docs, deliverables, run_ctx,
-                               convention_registry, *, run_is_non_sensitive):
-    """Phase 6.5 (EXECUTION ORDER: immediately after phase_6_synthesis, before phase 7
-    and before the phase 9 privacy scrub). The single EDITOR agent (Claude) gives an
-    ADVISORY senior editorial review of each CLEAN, pre-scrub assembled deliverable
-    master at <run>/deliverables/<doc_id>__amendments.json. EDITOR annotates only: it
-    never modifies the master and never gates shipping (INFRA-039).
+                               convention_registry, *, run_is_non_sensitive,
+                               board_tunables=None):
+    """Phase 6.5 (EXECUTION ORDER: immediately after phase_6_synthesis, before phase 7 and
+    before the phase 9 privacy scrub). The editorial review BOARD (INFRA-040) runs a BOUNDED
+    rank-to-rank escalation loop per deliverable over the CLEAN, pre-scrub master at
+    <run>/deliverables/<doc_id>__amendments.json. The board ANNOTATES only: it never modifies
+    the master and never gates shipping.
 
-    Option-B sensitive-run gate: phase 6.5 is an API egress point for pre-scrub content,
-    so it runs ONLY when the run is declared non-sensitive (the --no-redaction-override
-    waiver is in force; same regime as record_redaction_waiver). On a run NOT declared
-    non-sensitive, EDITOR is SKIPPED and the skip is recorded LOUDLY. Sensitive-mode
-    editorial review is deferred until the LAW-IV masking layer is activated.
+    THE BOUNDED LOOP (the one new mechanism; intra-phase, on the run bus ONLY -- it does NOT
+    use orchestrator.escalate_to_operator, which blocks on a human):
+      - PARSIMONY: start at EDITOR_CLERK. A higher rank is summoned ONLY when the current
+        rank's observation triggers escalation -- (a) confidence below the operator threshold
+        or (b) an explicit out_of_mandate flag. Otherwise the call resolves at the current
+        rank and the loop stops (most resolve at the clerk).
+      - ACCUMULATING STATE: a summoned higher rank reads the lower rank's observation +
+        rationale (passed forward and posted to the bus), it does not recompute from scratch.
+      - AUTHORITY BY RANK: the higher rank's verdict GOVERNS; the lower rank's observation is
+        preserved, not deleted (conserve-or-surface). Family split is decorrelation, not
+        authority -- dispatch is purely registry-driven (no name special-casing).
+      - BOUNDED STOP: never exceed max_rounds climbs; after the cap a TERMINAL decision is
+        rendered at the highest rank reached (no infinite climb). EDITOR_DG's existential
+        question fires only if DG is actually summoned.
 
-    Safety doctrine: output that does not parse into items each carrying a VALID verdict
-    (sound|concern|serious_concern) is a LOUD 'editorial review failed' (advisory, so it
-    does NOT halt the pipeline and does NOT withhold the deliverable). A genuine
-    'no concerns' result is items each with verdict 'sound', DISTINCT from absent/malformed.
-    Raw output is persisted on EVERY path."""
+    Option-B sensitive-run gate: phase 6.5 is an API egress point for pre-scrub content (and
+    the top three ranks add GPT egress), so the WHOLE board runs ONLY when the run is declared
+    non-sensitive (the --no-redaction-override waiver is in force). Otherwise the whole board
+    is SKIPPED and the skip is recorded LOUDLY. Sensitive-mode editorial review is deferred
+    until the LAW-IV masking layer is activated.
+
+    Safety doctrine (carried per rank): a rank whose output does not parse into items each
+    carrying a VALID verdict (sound|concern|serious_concern) is a LOUD 'editorial review
+    failed' (advisory, so it does NOT halt the pipeline and does NOT withhold the deliverable).
+    Raw output is persisted on EVERY path AND per rank."""
+    tunables = board_tunables or dict(_EDITORIAL_BOARD_DEFAULTS)
+    max_rounds = int(tunables.get("max_rounds", 5))
+    board_max_tokens = int(tunables.get("max_tokens", 8192))  # rank-aware output budget (config)
     summary = {}
     if not run_is_non_sensitive:
         note = "editorial review skipped: sensitive run, awaiting masking-layer activation"
         for doc in op_docs:
             _post_editorial(orch, doc["id"], "EDITORIAL_SKIPPED",
                             {"reason": "sensitive_run", "note": note})
-            raw_path = _persist_editor_output(run_ctx, doc["id"],
-                                              {"state": "SKIPPED", "reason": "sensitive_run", "note": note})
+            raw_path = _persist_rank_output(run_ctx, doc["id"], "BOARD",
+                                            {"state": "SKIPPED", "reason": "sensitive_run", "note": note})
             summary[doc["id"]] = {"state": "SKIPPED", "reason": "sensitive_run",
                                   "note": note, "raw_output_path": raw_path}
         return summary
@@ -868,48 +1053,69 @@ def phase_6_5_editorial_review(orch, keys, op_docs, deliverables, run_ctx,
         except Exception:
             summary[doc["id"]] = {"state": "NO_DELIVERABLE"}
             continue
-        editor = _build_wrapper("EDITOR", orch, keys)
-        result = editor.run_task(
-            work_payload={"task": "editorial_review", "document_id": doc["id"],
-                          "document_name": doc["name"],
-                          "amendments_master": master.get("amendments", [])},
-            run_objectives="Conduct a senior editorial review of the assembled deliverable's SUBSTANCE "
-                           "and DRAFTING: soundness, internal coherence, necessity, and the quality of the "
-                           "amendments and analysis. Emit ONE observation per item, each with: ref (what you "
-                           "comment on), verdict (EXACTLY one of 'sound', 'concern', 'serious_concern'), and "
-                           "rationale (your editorial reasoning in prose). If you have no concerns, emit one "
-                           "item with verdict 'sound'. You ANNOTATE only; you do NOT modify the deliverable "
-                           "and you do NOT mask, detect, or scrub anything.",
-            channel="main", max_tokens=2048,
-            convention_registry=convention_registry)
-        # Persist raw on EVERY path (success/all-sound/failed-parse).
-        raw_path = _persist_editor_output(run_ctx, doc["id"], {
-            "state": "RAW", "ok": result.get("ok"), "error": result.get("error"),
-            "parsed": result.get("parsed"), "raw_text": result.get("raw_text", "")})
-        # Silent-pass guard: must parse into observations each carrying a VALID verdict.
-        items = (decode_items(result.get("parsed"))
-                 if (result.get("ok") and is_envelope(result.get("parsed"))) else [])
-        obs = [it for it in items if _is_editorial_observation(it)]
-        valid = bool(obs) and all(
-            str(it.get("verdict", "")).strip().lower() in _EDITORIAL_VALID_VERDICTS for it in obs)
-        if not (result.get("ok") and valid):
-            # LOUD failure: the review did not complete. Advisory -> never halts, never
-            # withholds the deliverable; it flags the review as ABSENT, not silently empty.
-            _post_editorial(orch, doc["id"], "EDITORIAL_FAILED",
-                            {"reason": result.get("error") or "no valid editorial observation",
-                             "raw_output_path": raw_path})
-            summary[doc["id"]] = {"state": "FAILED",
-                                  "reason": result.get("error") or "no_valid_observation",
-                                  "raw_output_path": raw_path}
+
+        passes = []            # accumulating state: one record per rank that ran (lowest-first)
+        rounds = 0             # climbs performed; HARD-bounded by max_rounds
+        rank_idx = 0
+        failed = None
+        terminal_cap = False
+        while True:
+            rank = _EDITORIAL_RANKS[rank_idx]
+            ok, obs, raw_path, error = _dispatch_rank(
+                orch, keys, rank, doc, master, passes, run_ctx, convention_registry,
+                board_max_tokens)
+            if not ok:
+                # LOUD failure at this rank: advisory, never halts/withholds. Earlier ranks'
+                # observations remain on the bus (conserve-or-surface).
+                _post_editorial(orch, doc["id"], "EDITORIAL_FAILED",
+                                {"rank": rank, "round": rounds,
+                                 "reason": error, "raw_output_path": raw_path})
+                failed = {"rank": rank, "reason": error or "no_valid_observation",
+                          "raw_output_path": raw_path}
+                break
+            all_sound = all(str(it.get("verdict", "")).strip().lower() == "sound" for it in obs)
+            _post_editorial(orch, doc["id"], "EDITORIAL_REVIEW",
+                            {"rank": rank, "round": rounds, "observations": len(obs),
+                             "all_sound": all_sound,
+                             "verdicts": [it.get("verdict") for it in obs]})
+            passes.append({"rank": rank, "round": rounds, "observations": obs,
+                           "raw_output_path": raw_path})
+            trig, reason = _observation_triggers_escalation(obs, tunables)
+            if not trig:
+                break                          # resolved at this rank (parsimony)
+            if rounds >= max_rounds:
+                terminal_cap = True            # bounded stop: terminal at highest reached
+                break
+            if rank_idx >= len(_EDITORIAL_RANKS) - 1:
+                break                          # DG reached; cannot climb further
+            rank_idx += 1
+            rounds += 1                        # one climb (summon the next rank)
+
+        consolidated = _consolidate_board(passes)
+        board_raw = _persist_rank_output(run_ctx, doc["id"], "BOARD", {
+            "state": "FAILED" if failed else "REVIEWED",
+            "rounds": rounds, "ranks_run": [p["rank"] for p in passes],
+            "terminal_cap_reached": terminal_cap, "failed": failed,
+            "consolidated": consolidated})
+        if failed:
+            summary[doc["id"]] = {"state": "FAILED", "reason": failed["reason"],
+                                  "rank": failed["rank"], "ranks_run": [p["rank"] for p in passes],
+                                  "rounds": rounds, "raw_output_path": board_raw}
             continue
-        # Success. all-'sound' is a GENUINE no-concerns review (distinct from absent).
-        all_sound = all(str(it.get("verdict", "")).strip().lower() == "sound" for it in obs)
-        _post_editorial(orch, doc["id"], "EDITORIAL_REVIEW",
-                        {"observations": len(obs), "all_sound": all_sound,
-                         "verdicts": [it.get("verdict") for it in obs]})
-        _append_editorial_to_deliverable(info, obs)  # advisory annotation; master untouched
-        summary[doc["id"]] = {"state": "REVIEWED", "observations": len(obs),
-                              "all_sound": all_sound, "raw_output_path": raw_path}
+        if not passes:
+            summary[doc["id"]] = {"state": "FAILED", "reason": "no_rank_ran",
+                                  "raw_output_path": board_raw}
+            continue
+        governing_rank = passes[-1]["rank"]
+        all_sound = bool(consolidated) and all(
+            c["governing"]["verdict_l"] == "sound" for c in consolidated)
+        _append_board_to_deliverable(info, consolidated)  # advisory; master untouched
+        summary[doc["id"]] = {"state": "REVIEWED",
+                              "ranks_run": [p["rank"] for p in passes],
+                              "governing_rank": governing_rank, "rounds": rounds,
+                              "escalated": rounds > 0, "terminal_cap_reached": terminal_cap,
+                              "observations": sum(len(p["observations"]) for p in passes),
+                              "all_sound": all_sound, "raw_output_path": board_raw}
     return summary
 
 
@@ -977,12 +1183,22 @@ def _interactive_handler(topic, payload):
 # ---------- main ----------------------------------------------------------------------------
 
 def _cost_projection(num_op_docs, num_ctx_docs):
+    # Editorial review board (INFRA-040): WORST-CASE ceiling = all six ranks fire on every
+    # operational deliverable, split by family 3 Claude (EDITOR_CLERK / EDITOR_HEAD_OF_UNIT /
+    # EDITOR_HEAD_OF_SECTION) + 3 GPT (EDITOR_HEAD_OF_DEPARTMENT / EDITOR_DEPUTY_DG /
+    # EDITOR_DG) per doc. This is a CEILING, deliberately an over-count: the EXPECTED case is
+    # far lower because the loop is parsimonious -- most runs resolve at EDITOR_CLERK only
+    # (one Claude call/doc, zero GPT ranks). On a sensitive run the whole board is skipped, so
+    # its real contribution is 0. We project the ceiling so the estimate never under-counts.
+    board_claude_calls = 3 * num_op_docs   # WORST CASE: CLERK + HEAD_OF_UNIT + HEAD_OF_SECTION
+    board_gpt_calls = 3 * num_op_docs      # WORST CASE: HEAD_OF_DEPARTMENT + DEPUTY_DG + DG
     claude_calls = (len(PRODUCTION_AGENTS_PER_DOC) * num_op_docs
                     + len(PRODUCTION_AGENTS_CORPUS_LEVEL)
                     + len(CONVENTION_REVIEW_AGENTS) * num_op_docs  # style_guardian via Claude
                     + num_op_docs  # AMENDMENT_DRAFTER
-                    + num_op_docs)  # EDITOR (phase 6.5; one advisory review per deliverable, non-sensitive runs only)
-    gpt_calls = (len(AUDIT_AGENTS_PER_DOC) + 1) * num_op_docs  # +1 for PRACTICE_AUDITOR (gpt)
+                    + board_claude_calls)  # editorial board, Claude ranks (worst-case ceiling)
+    gpt_calls = ((len(AUDIT_AGENTS_PER_DOC) + 1) * num_op_docs  # +1 for PRACTICE_AUDITOR (gpt)
+                 + board_gpt_calls)  # editorial board, GPT ranks (worst-case ceiling)
     return estimate_cost(claude_calls=claude_calls, claude_in=5500, claude_out=1800,
                          gpt_calls=gpt_calls, gpt_in=5500, gpt_out=1500)
 
@@ -1307,18 +1523,21 @@ def main(argv=None):
 
         # Phase 6.5: EDITORIAL review (INFRA-039). Execution order: AFTER phase_6
         # synthesis (the master is assembled), BEFORE phase 7 and BEFORE the phase 9
-        # privacy scrub, so EDITOR reads the CLEAN pre-scrub master. Advisory only:
+        # privacy scrub, so EDITOR_CLERK reads the CLEAN pre-scrub master. Advisory only:
         # never modifies the master, never gates shipping. Option B: runs only on a
         # run declared non-sensitive (the --no-redaction-override waiver in force, i.e.
-        # redaction is waived); otherwise EDITOR is skipped LOUDLY. Editorial house:
+        # redaction is waived); otherwise EDITOR_CLERK is skipped LOUDLY. Editorial house:
         # no sensitivity_layer import, no privacy mechanic.
         run_is_non_sensitive = not redaction_enabled  # waiver in force => declared non-sensitive
-        print(f"[pipeline] phase 6.5: editorial review"
+        board_tunables = _resolve_editorial_board(ROOT)  # operator config, read once at phase start
+        print(f"[pipeline] phase 6.5: editorial review board"
+              f" (max_rounds={board_tunables['max_rounds']}, "
+              f"confidence_threshold={board_tunables['confidence_threshold']})"
               f"{'' if run_is_non_sensitive else ' (SKIPPED: sensitive run, awaiting masking-layer activation)'}",
               file=sys.stderr)
         editorial_summary = phase_6_5_editorial_review(
             orch, keys, op_docs, deliverables, run_ctx, conv_registry_dict,
-            run_is_non_sensitive=run_is_non_sensitive)
+            run_is_non_sensitive=run_is_non_sensitive, board_tunables=board_tunables)
 
         def _ed_count(*states):
             return sum(1 for v in editorial_summary.values() if v.get("state") in states)
