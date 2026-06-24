@@ -1954,6 +1954,136 @@ def check_64_oge_gnn_wired_at_run_end():
                f"capture_run; reproduced sequence persisted gnn_state.json over {s['nodes']} nodes")
 
 
+def _p1_masking_fixture(d):
+    """Write a hermetic operator-convention fixture into tempdir project_root `d`: a minimal
+    language_redaction_cues.json authorizing the 'identifier' shape, plus an operator rule whose
+    text mentions the 'identifier' cue (so authorized_shapes authorizes the identifier detector).
+    Returns (operator_rules, envelope) where the envelope has one SENSITIVE item (a grouped-digit
+    identifier) and one CLEAN item. No real config/store is touched (tempdir only)."""
+    cfg = d / "config"; cfg.mkdir(parents=True, exist_ok=True)
+    cues = {"languages": {"en": {"shape_cues": {"identifier": ["identifier"]},
+            "digit_class_ext": "", "decimal_ext": "", "separator_ext": "", "letter_class": "",
+            "titles": [], "magnitude_words": [], "currency_words": [], "connectives": []}}}
+    (cfg / "language_redaction_cues.json").write_text(json.dumps(cues, ensure_ascii=False), encoding="utf-8")
+    operator_rules = [{"id": "CONV-RED-1", "category": "confidentiality", "action": "redact",
+                       "severity": "required", "rule": "redact any identifier number in the document"}]
+    envelope = {"agent": "PROCESSOR", "doc_id": "docA", "items": [
+        {"item_id": "i-sensitive", "revision": 1, "ts": "t1", "kind": "finding", "confidence": "CONFIDENT",
+         "ref": "REF-1", "original_text": "Citizen ID 12-345-6789 applies.", "comment": "see ID 12-345-6789"},
+        {"item_id": "i-clean", "revision": 1, "ts": "t1", "kind": "finding", "confidence": "CONFIDENT",
+         "ref": "REF-2", "original_text": "This provision is clear and public."}]}
+    return operator_rules, envelope
+
+
+def check_65_masking_engine_splits():
+    """INFRA-041 P1: the outbound masking engine performs the x/y split with typed placeholders
+    and writes the per-item exposure ledger. EXECUTED (the WIRE-AT-THE-END discipline) on a hermetic
+    operator-convention fixture in a tempdir; non-mutating (never the real config or governance ledger).
+    Sensitivity is OPERATOR-CONVENTION-driven (redaction_detect over operator rules), never model-judged."""
+    import tempfile
+    import sensitivity_layer as S
+    d = Path(tempfile.mkdtemp(prefix="shimmer_p1_65_"))
+    rules, env = _p1_masking_fixture(d)
+    ledger = d / "exposure_ledger.jsonl"
+    res = S.mask_exchange(env, sensitive=True, operator_rules=rules, project_root=str(d),
+                          run_id="RUN-P1", ledger_path=str(ledger))
+    out = {it["item_id"]: it for it in res["outbound"]["items"]}
+    # y item: content fields are typed placeholders; the raw id span is GONE from outbound
+    sens = out["i-sensitive"]
+    if sens.get("original_text") != "[REDACTED:ORIGINAL_TEXT]" or sens.get("comment") != "[REDACTED:COMMENT]":
+        return _fail(f"sensitive item content not masked to typed placeholders: {sens}")
+    if "12-345-6789" in json.dumps(res["outbound"], ensure_ascii=False):
+        return _fail("raw identifier span survived in the outbound payload")
+    if sens.get("kind") != "finding" or sens.get("item_id") != "i-sensitive":
+        return _fail("structural keys (kind/item_id) must be preserved on a masked item")
+    # x item: passed through raw
+    if out["i-clean"].get("original_text") != "This provision is clear and public.":
+        return _fail("non-sensitive item must pass through unchanged")
+    # held local: the original sensitive item is held (not sent)
+    if ("i-sensitive", 1) not in res["held"] or res["held"][("i-sensitive", 1)].get("original_text") != "Citizen ID 12-345-6789 applies.":
+        return _fail("original sensitive item not held local")
+    # tags: one masked, one passed
+    by = {t["item_id"]: t for t in res["tags"]}
+    if by["i-sensitive"]["exposure"] != "masked" or by["i-clean"]["exposure"] != "passed":
+        return _fail(f"exposure tags wrong: {res['tags']}")
+    if "CONV-RED-1" not in by["i-sensitive"]["rule_ids"]:
+        return _fail("masked item did not record the authorizing operator rule id")
+    # ledger: one record per item, NO raw content
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    if len(lines) != 2:
+        return _fail(f"exposure ledger must hold one record per item (got {len(lines)})")
+    if "12-345-6789" in ledger.read_text(encoding="utf-8") or "Citizen ID" in ledger.read_text(encoding="utf-8"):
+        return _fail("raw content leaked into the exposure ledger")
+    rec = json.loads(lines[0])
+    if rec.get("schema") != "exposure_ledger/v1" or "exposure" not in rec:
+        return _fail("ledger record malformed")
+    return _ok("masking engine SPLITS x/y: sensitive item -> typed placeholders + held local; clean item "
+               "passes; per-item exposure ledger written (no raw content); operator-rule-driven, not model-judged")
+
+
+def check_66_masking_rejoin_dedupe():
+    """INFRA-041 P1: rejoin restores held-local y content by (item_id, revision) and dedupes to the
+    current revision per item_id (INFRA-037). Executed, tempdir, non-mutating."""
+    import tempfile
+    import sensitivity_layer as S
+    d = Path(tempfile.mkdtemp(prefix="shimmer_p1_66_"))
+    rules, env = _p1_masking_fixture(d)
+    res = S.mask_exchange(env, sensitive=True, operator_rules=rules, project_root=str(d),
+                          run_id="RUN-P1", ledger_path=str(d / "ledger.jsonl"))
+    # rejoin the masked outbound with the held map -> originals restored
+    rejoined = S.rejoin_after_external(res["outbound"], res["held"])
+    by = {it["item_id"]: it for it in rejoined}
+    if by["i-sensitive"].get("original_text") != "Citizen ID 12-345-6789 applies.":
+        return _fail("rejoin did not restore the held-local original content")
+    if by["i-clean"].get("original_text") != "This provision is clear and public.":
+        return _fail("rejoin altered the passed-through item")
+    # dedupe: a higher-revision duplicate of i-clean supersedes the original
+    bumped = list(res["outbound"]["items"]) + [
+        {"item_id": "i-clean", "revision": 2, "ts": "t2", "kind": "finding",
+         "confidence": "CONFIDENT", "ref": "REF-2", "original_text": "Revised public text."}]
+    deduped = S.rejoin_after_external(bumped, res["held"])
+    clean = [it for it in deduped if it["item_id"] == "i-clean"]
+    if len(clean) != 1 or clean[0].get("revision") != 2:
+        return _fail(f"rejoin must dedupe to the highest revision per item_id: {clean}")
+    return _ok("rejoin restores held-local y content by (item_id, revision) and dedupes to the current "
+               "revision per item_id (INFRA-037)")
+
+
+def check_67_masking_idempotent_and_inert():
+    """INFRA-041 P1: the engine is idempotent on already-masked input, inert under non-sensitive mode,
+    and refuses (no silent passthrough) when the operator-convention inputs are missing under sensitive
+    mode. Executed, tempdir, non-mutating."""
+    import tempfile
+    import sensitivity_layer as S
+    d = Path(tempfile.mkdtemp(prefix="shimmer_p1_67_"))
+    rules, env = _p1_masking_fixture(d)
+    # (a) idempotent: re-masking an already-masked outbound is a no-op (no nested placeholders, no re-hold)
+    once = S.mask_exchange(env, sensitive=True, operator_rules=rules, project_root=str(d),
+                           ledger_path=str(d / "a.jsonl"))
+    twice = S.mask_exchange(once["outbound"], sensitive=True, operator_rules=rules, project_root=str(d),
+                            ledger_path=str(d / "b.jsonl"))
+    sens2 = {it["item_id"]: it for it in twice["outbound"]["items"]}["i-sensitive"]
+    if sens2.get("original_text") != "[REDACTED:ORIGINAL_TEXT]":
+        return _fail(f"not idempotent: placeholder changed on re-mask ({sens2.get('original_text')!r})")
+    if twice["held"]:
+        return _fail("already-masked item must not be re-held (nothing sensitive remains to hold)")
+    # (b) inert under non-sensitive: payload returned unchanged, no ledger written
+    sentinel = {"agent": "PROCESSOR", "doc_id": "docA", "items": [dict(env["items"][0])]}
+    inert_ledger = d / "inert.jsonl"
+    if S.mask_for_external(sentinel, sensitive=False, ledger_path=str(inert_ledger)) is not sentinel:
+        return _fail("non-sensitive mode must return the payload unchanged (inert)")
+    if inert_ledger.exists():
+        return _fail("non-sensitive mode must not write the exposure ledger")
+    # (c) no silent passthrough: sensitive mode without operator inputs RAISES
+    try:
+        S.mask_exchange(env, sensitive=True)
+        return _fail("sensitive mode without operator_rules/project_root must RAISE, not pass raw")
+    except ValueError:
+        pass
+    return _ok("engine idempotent on already-masked input; inert + ledger-free under non-sensitive mode; "
+               "raises (no silent passthrough) when operator-convention inputs are missing under sensitive mode")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -2029,6 +2159,9 @@ CHECKS = [
     ("62 OGE GNN executed end-to-end (MACHINERY not learning: fwd+delta-backprop, weights move, incremental)", check_62_oge_gnn_executed),
     ("63 OGE GNN payload-free (SAFE-only features; no RAW/placeholder in state)", check_63_oge_gnn_payload_free),
     ("64 OGE GNN wired at run-end (gnn_update after build_graph after capture_run)", check_64_oge_gnn_wired_at_run_end),
+    ("65 masking engine x/y split + typed placeholders + exposure ledger (INFRA-041 P1)", check_65_masking_engine_splits),
+    ("66 masking rejoin restores held-local y + dedupes by item_id/revision (INFRA-041 P1)", check_66_masking_rejoin_dedupe),
+    ("67 masking idempotent + inert under non-sensitive + no silent passthrough (INFRA-041 P1)", check_67_masking_idempotent_and_inert),
 ]
 
 

@@ -73,6 +73,7 @@ def model_approvals_path(pr): return governance_dir(pr) / "model_approvals.json"
 def constitution_guard_log_path(pr): return governance_dir(pr) / "constitution_guard_log.jsonl"
 def redaction_waivers_path(pr): return governance_dir(pr) / "redaction_waivers.jsonl"
 def sensitivity_overrides_path(pr): return governance_dir(pr) / "sensitivity_overrides.jsonl"
+def exposure_ledger_path(pr): return governance_dir(pr) / "exposure_ledger.jsonl"  # LAW-IV masking audit trail (INFRA-041)
 
 
 def ensure_dirs(project_root) -> None:
