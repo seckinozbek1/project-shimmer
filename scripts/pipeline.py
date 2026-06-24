@@ -21,7 +21,6 @@ import argparse
 import asyncio
 import io
 import json
-import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -46,7 +45,7 @@ import sensitivity_layer
 from corpus_validator import extract_distinctive_terms, validate_corpus_entry
 import embedding_store
 from cost_tracker import CostTracker, estimate_cost
-from document_dating import read_dates, resolve_dates, write_dates
+from document_dating import resolve_dates, write_dates
 from model_registry import enforce_current_models
 from snapshot_manager import (
     list_snapshots, load_snapshot, reset_snapshot, save_snapshot,
@@ -912,16 +911,6 @@ def phase_6_5_editorial_review(orch, keys, op_docs, deliverables, run_ctx,
         summary[doc["id"]] = {"state": "REVIEWED", "observations": len(obs),
                               "all_sound": all_sound, "raw_output_path": raw_path}
     return summary
-
-
-def _render_amendments_md(doc, payload, registry, reference_index=None):
-    """Back-compat wrapper. The canonical Markdown render now lives in
-    amendment_render.render_amendments_md, a pure function of the master `payload`.
-    This delegates to it so the master stays the single content source
-    (reference_index is unused; kept only for signature compatibility)."""
-    return amendment_render.render_amendments_md(
-        payload, document_name=doc.get("name", ""),
-        category_for_conv=lambda c: _category_for_conv(c, registry))
 
 
 def _render_per_agent_md(doc, production, audit, conv_review):
