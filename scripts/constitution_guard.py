@@ -22,11 +22,33 @@ regardless of interface (terminal prompt today, UI later).
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 # Sections whose existing entries are protected from in-place modify/delete.
 _PROTECTED_SECTIONS = ("seed_laws", "amendments")
+
+# --- Meta-law tripwire signature set (INFRA-043) --------------------------------------------
+# The linguistic signature of a "lift the limits / reverse-engineer / one-time meta-law edit" move.
+# A FLAG, not a complete semantic guard: it has FALSE POSITIVES (legitimate text containing the
+# phrasing) and FALSE NEGATIVES (a bypass phrased differently). It SURFACES for operator attention
+# and fails toward flagging-for-review, never toward silently blocking legitimate work. No guarantee
+# is claimed. Operator-extensible via config/meta_law_cues.json (a {"signatures": [regex, ...]} list).
+_META_SIGNATURE_DEFAULT = (
+    r"one[\s-]?time",
+    r"just this once",
+    r"\bthis once\b",
+    r"reverse[\s-]?engineer",
+    r"lift the limit",
+    r"bypass the (?:rule|guard|law|constitution|tripwire)",
+    r"ignore the (?:rule|law|constitution|guard)",
+    r"disable the (?:guard|tripwire)",
+    r"override (?:the )?law",
+    r"rewrite the (?:law|constitution|meta)",
+    r"edit the meta",
+    r"meta[\s-]?law editing",
+)
 
 # Governance ledger of guard decisions. Lives in the protected durable/governance
 # tree (INFRA-030); reset/load never touch it (structural protection by location).
@@ -115,6 +137,16 @@ def check_constitution_change(
         # If the current file is unreadable, treat as no protections to compare.
         return {"allowed": True, "violations": [], "approved": False}
 
+    # INFRA-043 verified-DELTA-path: an amendment append must be VERIFIED (one new id, no-gap for the
+    # INFRA-NNN governance space, operator_approved). A malformed/unverified append is refused at
+    # record time (a structural correctness gate, distinct from the operator-approvable modify/delete).
+    append_check = verify_amendment_append(current, proposed_data)
+    if not append_check["ok"]:
+        _log_decision(project_root, {"timestamp": _now(), "reason": reason,
+                                     "event": "UNVERIFIED_AMENDMENT_APPEND",
+                                     "violations": append_check["errors"], "approved": False})
+        return {"allowed": False, "violations": append_check["errors"], "approved": False}
+
     violations = protected_violations(current, proposed_data)
     if not violations:
         return {"allowed": True, "violations": [], "approved": False}
@@ -132,3 +164,144 @@ def check_constitution_change(
         "approved": approved,
     })
     return {"allowed": approved, "violations": violations, "approved": approved}
+
+
+# --- Verified DELTA path: append shape + no-gap (INFRA-043) ----------------------------------
+
+def _infra_num(amendment_id):
+    """Numeric part of an INFRA-NNN id, or None for any other id form (e.g. runtime AMEND-NNN)."""
+    s = str(amendment_id)
+    m = re.fullmatch(r"INFRA-(\d{3,})", s)
+    return int(m.group(1)) if m else None
+
+
+def verify_amendment_append(old: dict, new: dict) -> dict:
+    """INFRA-043: a constitution write that APPENDS amendment(s) is VERIFIED only if it adds exactly
+    one new amendment, that amendment is operator_approved, and (for the INFRA-NNN governance space)
+    its id is exactly prior_max + 1, never reused, never a gap. The runtime AMEND-NNN space (auto-
+    sequenced, operator-approved on escalation) is checked for append-shape + operator_approved only;
+    the no-gap rule (genesis Part XXVII H) governs the INFRA-NNN ids. Modify/delete is handled by
+    protected_violations, not here. A write that adds NO amendment passes trivially. Returns
+    {ok, errors}."""
+    errors: list[str] = []
+    old_ams = old.get("amendments", []) or []
+    new_ams = new.get("amendments", []) or []
+    old_ids = [str(a.get("id")) for a in old_ams if isinstance(a, dict)]
+    new_ids = [str(a.get("id")) for a in new_ams if isinstance(a, dict)]
+    added = [i for i in new_ids if i not in old_ids]
+    if not added:
+        return {"ok": True, "errors": []}
+    if len(added) > 1:
+        errors.append(f"more than one amendment added in a single write: {added}")
+    prior_max = max((n for n in (_infra_num(i) for i in old_ids) if n is not None), default=0)
+    for aid in added:
+        rec = next((a for a in new_ams if str(a.get("id")) == aid), None)
+        if not (isinstance(rec, dict) and rec.get("operator_approved") is True):
+            errors.append(f"amendment {aid} is not operator_approved (the ratification marker)")
+        n = _infra_num(aid)
+        if n is not None and n != prior_max + 1:
+            errors.append(f"amendment {aid} breaks the no-gap rule (expected INFRA-{prior_max + 1:03d})")
+    return {"ok": not errors, "errors": errors}
+
+
+# --- genesis integrity (INFRA-043): extend the guard UP to the genesis immutable core -------
+
+def _genesis_part_one(genesis_text: str) -> str:
+    """The Part I (seven seed laws) region of genesis.md: from the Part I heading to the Part II
+    heading. Only this immutable-core region is integrity-checked, so append-only Part growth
+    (Parts XXVIII+) never false-trips."""
+    m = re.search(r"##\s*Part\s+I\b", genesis_text)
+    if not m:
+        return ""
+    start = m.end()
+    m2 = re.search(r"##\s*Part\s+II\b", genesis_text[start:])
+    return genesis_text[start: start + m2.start()] if m2 else genesis_text[start:]
+
+
+def check_genesis_integrity(project_root) -> dict:
+    """INFRA-043: verify genesis.md Part I (the seven seed laws) mirrors the guarded constitution
+    seed_laws. Every constitution seed-law id must be present in genesis Part I; a missing id means
+    the immutable genesis core was tampered (a seed law removed or renamed). Returns
+    {ok, violations, missing}. Consistent with the constitution guard: a divergence is a protected
+    violation surfaced for operator attention. Only the seed-law region is checked."""
+    root = Path(project_root)
+    gpath, cpath = root / "genesis.md", root / "config" / "constitution.json"
+    if not gpath.exists() or not cpath.exists():
+        return {"ok": True, "violations": [], "missing": []}
+    try:
+        gtext = gpath.read_text(encoding="utf-8")
+        seed_laws = json.loads(cpath.read_text(encoding="utf-8")).get("seed_laws", [])
+    except Exception:
+        return {"ok": True, "violations": [], "missing": []}
+    part1 = _genesis_part_one(gtext)
+    missing = [str(law.get("id")) for law in seed_laws
+               if str(law.get("id", "")) and str(law.get("id")) not in part1]
+    violations = [f"genesis Part I is missing seed law {lid} (immutable core tampered)" for lid in missing]
+    return {"ok": not violations, "violations": violations, "missing": missing}
+
+
+# --- the linguistic-signature scan + the operator/agent asymmetry (INFRA-043) ---------------
+
+def _load_meta_signature(project_root) -> list[str]:
+    pats = list(_META_SIGNATURE_DEFAULT)
+    if project_root is None:
+        return pats
+    try:
+        p = Path(project_root) / "config" / "meta_law_cues.json"
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            extra = data.get("signatures") if isinstance(data, dict) else None
+            if isinstance(extra, list):
+                pats.extend(str(x) for x in extra if str(x).strip())
+    except Exception:
+        pass  # operator-extension is best-effort; defaults always apply
+    return pats
+
+
+def scan_for_meta_signature(text, *, project_root=None) -> list:
+    """Return the matched signature substrings in `text` (case-insensitive); empty list = no match.
+    A FLAG for operator attention, NOT a semantic guarantee (false positives + false negatives)."""
+    if not isinstance(text, str) or not text.strip():
+        return []
+    hits = []
+    for pat in _load_meta_signature(project_root):
+        try:
+            m = re.search(pat, text, re.IGNORECASE)
+        except re.error:
+            continue
+        if m:
+            hits.append(m.group(0))
+    return hits
+
+
+def operator_input_verdict(text, *, interactive, confirmed=None, project_root=None) -> dict:
+    """Operator-path handling of the meta-law signature (LAW-0: NEVER a hard block). Returns the
+    action:
+      - no signature                                  -> 'clear'
+      - signature, non-interactive                    -> 'proceed' (log-and-proceed; the operator
+                                                         already declared intent by running it)
+      - signature, interactive, confirmed is True     -> 'proceed'
+      - signature, interactive, confirmed is not True -> 'abort' (the operator's OWN choice to stop,
+                                                         not a guard cage)
+    The operator path is never 'block' or 'deny'. A guard that could cage the operator would invert
+    LAW-0 (the operator is the sole source of constitutional authority)."""
+    hits = scan_for_meta_signature(text, project_root=project_root)
+    if not hits:
+        return {"signature": [], "action": "clear"}
+    if not interactive:
+        return {"signature": hits, "action": "proceed"}
+    return {"signature": hits, "action": "proceed" if confirmed is True else "abort"}
+
+
+def agent_delta_verdict(text, *, project_root=None) -> dict:
+    """Agent-path handling of the meta-law signature: refuse-and-route. Agents cannot amend governed
+    structure; a signature-carrying agent-proposed DELTA is flagged and refused (never auto-applied),
+    and routed to the operator. Returns {signature, action}."""
+    hits = scan_for_meta_signature(text, project_root=project_root)
+    return {"signature": hits, "action": "refuse_and_route" if hits else "clear"}
+
+
+def log_guard_event(project_root, event: str, detail: dict) -> None:
+    """Append a meta-law-tripwire event to the protected governance ledger (same store as the
+    amendment-guard decisions; survives reset)."""
+    _log_decision(project_root, {"timestamp": _now(), "event": event, **(detail or {})})

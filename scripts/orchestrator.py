@@ -20,6 +20,7 @@ from agent_wrapper import AgentWrapper, load_api_keys, project_root
 from block_gate import BlockGate, BlockHandle
 from bus_reader import BACKEND_BUDGETS, assemble_context
 from constitution import Constitution, MatchResult
+import constitution_guard
 from cost_tracker import CostTracker
 from message_bus import MessageBus
 
@@ -356,17 +357,34 @@ class TopOrchestrator:
     def escalate_delta_proposals(self, delta_proposals):
         results = []
         for proposal in delta_proposals:
+            # INFRA-043 meta-law tripwire, AGENT path: refuse-and-route. An agent-proposed DELTA
+            # carrying the meta-law signature is flagged and routed to the operator (it can never
+            # self-apply; agents have no write path to governed structure). The operator still decides.
+            scan_text = json.dumps(proposal.get("proposed_change", {}), ensure_ascii=False) + \
+                " " + str(proposal.get("kind", "")) + " " + str(proposal.get("trigger", ""))
+            av = constitution_guard.agent_delta_verdict(scan_text, project_root=getattr(self, "root", None))
+            if av["signature"]:
+                constitution_guard.log_guard_event(
+                    getattr(self, "root", None), "META_SIGNATURE_AGENT_DELTA",
+                    {"delta_id": proposal.get("id"), "kind": proposal.get("kind"),
+                     "signature": av["signature"], "action": av["action"]})
             decision = self.escalate_to_operator(topic=f"delta_proposal:{proposal.get('kind')}",
-                                                 payload={"proposal": proposal}, laws_consulted=["LAW-0", "LAW-VI"])
+                                                 payload={"proposal": proposal,
+                                                          "meta_signature": av["signature"]},
+                                                 laws_consulted=["LAW-0", "LAW-VI"])
             verdict = decision.decision.strip().upper()
             approved = verdict in {"APPROVE", "APPROVED", "OK", "YES", "ENACT"}
             entry = {"delta_id": proposal.get("id"), "kind": proposal.get("kind"),
-                     "decision": decision.decision, "rationale": decision.rationale, "approved": approved}
+                     "decision": decision.decision, "rationale": decision.rationale, "approved": approved,
+                     "meta_signature": av["signature"]}
             if approved:
+                # operator_approved=true is the ratification marker the verified-append path requires
+                # (INFRA-043): this entry is recorded only after the operator approved the escalation.
                 self.constitution.add_amendment({
                     "title": f"Operator-approved DELTA {proposal.get('id')}",
                     "text": proposal.get("proposed_change", {}).get("reason", ""),
                     "source_delta": proposal, "operator_rationale": decision.rationale,
+                    "operator_approved": True,
                 })
             results.append(entry)
         return results

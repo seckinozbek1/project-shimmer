@@ -58,6 +58,7 @@ from pipeline_amendment_validator import validate_amendment_payload
 import verifiability_gate
 from reference_builder import ReferenceIndex
 import reference_builder
+import constitution_guard
 from sensitivity_layer.redaction_stage import run_redaction_phase
 import redaction_gate
 import run_context as run_context_mod
@@ -1337,6 +1338,35 @@ def main(argv=None):
     # Durable/protected assets live under durable/ and are never written here.
     run_ctx = run_context_mod.create_run(ROOT)
     print(f"[pipeline] run folder: {run_ctx.run_dir.relative_to(ROOT)}", file=sys.stderr)
+
+    # Meta-law tripwire (INFRA-043). (1) genesis integrity: surface a tampered immutable core
+    # (genesis Part I must mirror the guarded constitution seed_laws). Surfaced and logged, never a
+    # hard block of the operator (the operator owns genesis.md; the verify gate asserts the invariant).
+    gi = constitution_guard.check_genesis_integrity(ROOT)
+    if not gi["ok"]:
+        print(f"[meta-law-tripwire] WARNING: genesis integrity: {gi['violations']}", file=sys.stderr)
+        constitution_guard.log_guard_event(ROOT, "GENESIS_INTEGRITY", {"violations": gi["violations"]})
+    # (2) OPERATOR-path signature scan on the operator's run objectives. LAW-0: NEVER a hard block.
+    # Interactive: confirm-and-proceed. Non-interactive: log-and-proceed (the operator already
+    # declared intent by running the pipeline). Agents are handled separately (refuse-and-route).
+    _meta_hits = constitution_guard.scan_for_meta_signature(args.run_objectives, project_root=ROOT)
+    if _meta_hits:
+        print(f"[meta-law-tripwire] operator input matched the meta-law signature: {_meta_hits}",
+              file=sys.stderr)
+        constitution_guard.log_guard_event(ROOT, "META_SIGNATURE_OPERATOR_INPUT",
+                                            {"signature": _meta_hits, "interactive": not args.non_interactive})
+        _confirmed = None
+        if not args.non_interactive:
+            try:
+                _confirmed = input("[meta-law-tripwire] This reads like a meta-level change attempt. "
+                                   "Confirm you intend it (yes/no): ").strip().lower() in {"yes", "y"}
+            except EOFError:
+                _confirmed = False
+        _mv = constitution_guard.operator_input_verdict(
+            args.run_objectives, interactive=not args.non_interactive, confirmed=_confirmed, project_root=ROOT)
+        if _mv["action"] == "abort":
+            print("[meta-law-tripwire] operator declined; aborting this run.", file=sys.stderr)
+            return 7  # the operator's OWN choice to stop, not a guard cage
 
     # Sensitivity-layer inactive HARD GATE (INFRA-038). The FULL LAW-IV sensitivity
     # layer (reasoning about sensitivity as a first-class concept; masking sensitive
