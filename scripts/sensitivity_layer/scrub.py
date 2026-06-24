@@ -188,61 +188,6 @@ def _redact_obj(obj, reds):
     return walk(obj), total
 
 
-def _apply_redactions_to_master(master, redactions):
-    """Apply approved redactions to the canonical amendments master IN PLACE
-    (INFRA-033), scrubbing EVERY string leaf - not only original_text/proposed_text/
-    comment - so no field can leak a span. Returns the number of substitutions."""
-    scrubbed, n = _redact_obj(master, redactions)
-    # in-place: preserve identity for callers holding the reference
-    master.clear()
-    master.update(scrubbed)
-    if n:
-        master["_redaction_applied"] = True
-    return n
-
-
-def _redaction_outcome(artifacts, reds):
-    """PURE (no IO, no model): scrub each redaction span from every artifact text,
-    then VERIFY no span survives. `artifacts` is {name: text}. Returns a report:
-      proposed     : number of distinct spans
-      applied      : spans located (>=1 substitution somewhere)
-      dropped      : spans located NOWHERE (failed substitution -> BLOCK, never silent)
-      survivors    : {span: [artifact names]} still containing the span AFTER scrub
-      by_artifact  : {name: substitutions} (span-based, actual, not proposal count)
-      total_subs   : sum of by_artifact
-      scrubbed     : {name: scrubbed text}
-    Deterministic and local; this is the testable core both the live phase and the
-    verify gate exercise."""
-    spans = _span_list(reds)
-    located = {span: 0 for span, _ in spans}
-    by_artifact = {}
-    scrubbed = {}
-    for name, text in artifacts.items():
-        t = text
-        here = 0
-        for span, repl in spans:
-            t, n = _sub_span(t, span, repl)
-            located[span] += n
-            here += n
-        scrubbed[name] = t
-        by_artifact[name] = here
-    survivors = {}
-    for name, t in scrubbed.items():
-        for span, _ in spans:
-            if _count_span(t, span) > 0:
-                survivors.setdefault(span, []).append(name)
-    dropped = [span for span, _ in spans if located[span] == 0]
-    return {
-        "proposed": len(spans),
-        "applied": sum(1 for span, _ in spans if located[span] > 0),
-        "dropped": dropped,
-        "survivors": survivors,
-        "by_artifact": by_artifact,
-        "total_subs": sum(by_artifact.values()),
-        "scrubbed": scrubbed,
-    }
-
-
 # --- shape (a) hand-back: produce scrubbed content, pipeline renders, then verify ---
 
 def scrub_master_and_body(master, reds, doc_text):

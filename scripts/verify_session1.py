@@ -1076,7 +1076,7 @@ def check_46_redaction_applies_to_all_artifacts():
     so the literal-match miss from the paid run can no longer drop a span."""
     import inspect
     from sensitivity_layer.scrub import (_sub_span, _count_span, _redact_obj,
-                                         _apply_redactions_to_master, scrub_text_artifacts_and_verify)
+                                         scrub_text_artifacts_and_verify)
     from sensitivity_layer.redaction_stage import run_redaction_phase
     import pipeline
     # (C) the EXACT paid-run mismatch: clerk merged span vs document text with the
@@ -1098,7 +1098,6 @@ def check_46_redaction_applies_to_all_artifacts():
     sm, nn = _redact_obj(master, [{"span": "الواحة القابضة"}])
     if nn < 2 or "الواحة القابضة" in json.dumps(sm, ensure_ascii=False):
         return _fail("master scrub did not cover all string leaves (defect A on master)")
-    _apply_redactions_to_master(master, [{"span": "x"}])  # smoke: in-place, no raise
     # (A-artifacts) shape (a) split (1c relocation): the privacy verify targets the
     # INDEPENDENT text artifacts; the editorial RENDER stays pipeline-side and is
     # injected into the relocated privacy stage as the render_deliverable callback.
@@ -1130,34 +1129,50 @@ def check_46_redaction_applies_to_all_artifacts():
 
 
 def check_47_redaction_outcome_verified():
-    """Redaction APPLICATION fix (defect B + D + the real gate): the outcome is
-    VERIFIED by grepping every artifact (a survivor BLOCKS), counts are span-based
-    not proposal-based, and a span located NOWHERE BLOCKS rather than silently
-    zero-matching."""
-    from sensitivity_layer.scrub import _redaction_outcome
+    """Redaction APPLICATION fix (defect B + D + the real gate): the LIVE survivor path
+    `scrub_text_artifacts_and_verify` is EXECUTED (no longer a dead fossil) on three
+    scenarios — it scrubs the on-disk text artifacts then re-greps EVERY artifact:
+    (a) all-clean -> applied == proposed, zero dropped, zero survivors;
+    (b) located-nowhere -> the span is reported in `dropped` (no silent zero-match);
+    (c) planted-survivor (a replacement that re-introduces the span) -> reported in
+    `survivors` and BLOCKS. This FAILS if the live survivor grep (scrub.py ~314-316) is
+    removed or neutered. Uses throwaway temp files (the live fn writes the scrubbed
+    artifact to disk); makes no repo mutation."""
+    import tempfile
+    from sensitivity_layer.scrub import scrub_text_artifacts_and_verify, _span_list
     from sensitivity_layer.redaction_stage import (build_redaction_escalation,
                           _REDACTION_FAILURE, _REDACTION_PUBLIC_KINDS)
-    reds = [{"span": "خالد المنصور", "replacement": "[REDACTED]"},
-            {"span": "0000-1111-2222", "replacement": "[REDACTED]"}]
-    # all-clean: applied == proposed, nothing dropped, nothing survives
-    clean = _redaction_outcome(
-        {"deliverable.md": "x خالد المنصور y 0000-1111-2222 z", "summary.md": "none"}, reds)
+
+    def _run(artifact_text, reds):
+        # Drive the LIVE function on a throwaway on-disk text artifact (it scrubs in
+        # place, then re-greps). Seed located/by_artifact exactly as the live caller does.
+        d = Path(tempfile.mkdtemp(prefix="shimmer_v47_"))
+        p = d / "x__deliverable.md"
+        p.write_text(artifact_text, encoding="utf-8")
+        info = {"per_agent_deliverable": str(p)}
+        located = {span: 0 for span, _ in _span_list(reds)}
+        return scrub_text_artifacts_and_verify(reds, info, located, {})
+
+    # (a) all-clean: both spans present and cleanly scrubbed
+    clean = _run("x خالد المنصور y 0000-1111-2222 z",
+                 [{"span": "خالد المنصور", "replacement": "[REDACTED]"},
+                  {"span": "0000-1111-2222", "replacement": "[REDACTED]"}])
     if clean["dropped"] or clean["survivors"] or clean["applied"] != clean["proposed"]:
-        return _fail(f"clean apply misreported: {clean['dropped']} {clean['survivors']} "
-                     f"{clean['applied']}/{clean['proposed']}")
-    # (D) counts are span-based actual substitutions, never the proposal count
-    if clean["by_artifact"].get("deliverable.md") != 2 or clean["by_artifact"].get("summary.md") != 0:
-        return _fail("by_artifact counts are not span-based actual substitutions")
-    # (B) a span located NOWHERE -> dropped (no silent zero-match)
-    drop = _redaction_outcome({"a.md": "nothing here"}, [{"span": "غير موجود"}])
+        return _fail(f"clean apply misreported: dropped={clean['dropped']} survivors={clean['survivors']} "
+                     f"applied={clean['applied']}/{clean['proposed']}")
+    # (D) counts are span-based ACTUAL substitutions, never the proposal count
+    if clean["by_artifact"].get("per_agent_deliverable") != 2:
+        return _fail(f"by_artifact counts are not span-based actual substitutions: {clean['by_artifact']}")
+    # (b) a span located NOWHERE -> dropped (no silent zero-match)
+    drop = _run("nothing here", [{"span": "غير موجود", "replacement": "[REDACTED]"}])
     if not drop["dropped"] or drop["applied"] != 0:
-        return _fail("a span located nowhere must be 'dropped' (no silent zero-match)")
-    # the real gate: simulate a survivor the scrubber could not remove (overlapping
-    # replacement leaving the span) -> survivors must be reported
-    surv = _redaction_outcome({"x.md": "خالد المنصور"},
-                              [{"span": "خالد المنصور", "replacement": "خالد المنصور (kept)"}])
+        return _fail(f"a span located nowhere must be 'dropped' (no silent zero-match): {drop}")
+    # (c) planted survivor: the replacement re-introduces the span -> the re-grep must
+    # catch it. THIS is what fails if the survivor grep is removed.
+    surv = _run("خالد المنصور",
+                [{"span": "خالد المنصور", "replacement": "خالد المنصور (kept)"}])
     if not surv["survivors"]:
-        return _fail("post-apply grep did not catch a surviving span (real gate inert)")
+        return _fail("LIVE survivor grep did not catch a surviving span (real gate inert)")
     # the two application-layer BLOCK kinds exist and surface to the operator
     for fk in ("span_dropped", "pii_survives_in_deliverable"):
         if fk not in _REDACTION_FAILURE or fk not in _REDACTION_PUBLIC_KINDS:
@@ -1167,7 +1182,8 @@ def check_47_redaction_outcome_verified():
                                          detail={"survivors": {"s": ["x"]}})
         if esc["failure_kind"] != fk or "detail" not in esc:
             return _fail(f"escalation for {fk} not surfaced with detail")
-    return _ok("outcome verified by grep (survivor BLOCKS); span-based counts; located-nowhere BLOCKS")
+    return _ok("LIVE survivor path executed (scrub_text_artifacts_and_verify): clean OK, "
+               "located-nowhere -> dropped, planted survivor -> survivors+BLOCK")
 
 
 def check_48_qwen_shared_model_cache():
