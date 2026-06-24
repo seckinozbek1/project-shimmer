@@ -304,11 +304,24 @@ def resolve_dates(documents: list[Path], *, search_router=None, sensitive=False)
     return out
 
 
+# PAYLOAD-FREE BY CONSTRUCTION (INFRA-041 P3): the persisted document_dates store carries
+# ONLY these structural fields. title (from content/metadata), abs_path (operator-machine
+# path), and validation_note (a verbatim first-page excerpt) are operator content / machine
+# paths and are DROPPED on write -- regardless of what transient fields the in-memory record
+# carries (abs_path stays in memory for the run's file-copy step; it just never persists).
+_DATE_STORE_SAFE_FIELDS = ("filename", "date", "date_source", "date_confidence",
+                           "date_candidates", "content_validated")
+
+
+def _safe_date_record(rec: dict) -> dict:
+    return {k: rec[k] for k in _DATE_STORE_SAFE_FIELDS if k in rec}
+
+
 def write_dates(project_root: Path, dated_documents: list[dict]) -> Path:
     import durable_paths
     path = durable_paths.document_dates_path(project_root)  # protected durable learning (INFRA-030)
     payload = {"schema_version": "1.0.0", "generated_at": datetime.utcnow().isoformat() + "Z",
-               "documents": dated_documents}
+               "documents": [_safe_date_record(r) for r in dated_documents]}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path

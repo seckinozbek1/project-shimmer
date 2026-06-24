@@ -2198,6 +2198,88 @@ def check_70_chokepoint_date_web_suppressed():
                "non-sensitive still searches; resolve_dates + pipeline thread the sensitive flag")
 
 
+def check_71_boot_stores_payload_free():
+    """INFRA-041 P3: the adaptive_spawn BOOT stores are payload-free BY CONSTRUCTION. EXECUTED:
+    spawn_all runs on a synthetic corpus carrying a planted operator span; the citation store keeps
+    pattern+count but DROPS verbatim examples, situational stores institution CATEGORIES not names,
+    and linguistic DROPS the verbatim representative sentences. No planted operator span survives in
+    any of the three stores, in any mode (not mode-gated). Tempdir, non-mutating."""
+    import tempfile
+    import adaptive_spawn, durable_paths
+    d = Path(tempfile.mkdtemp(prefix="shimmer_p3_71_"))
+    ctx = d / "input" / "context"; ctx.mkdir(parents=True)
+    planted = "The secret applicant codename is Bluebird."
+    corpus = ("United Nations Security Council resolution A/RES/70/1 decides the matter. " + planted +
+              " Citizen identifier 12-345-6789 is on file. The Council requests a report. "
+              "Article 5 shall apply pursuant to the regulation.")
+    (ctx / "doc1.md").write_text(corpus, encoding="utf-8")
+    adaptive_spawn.spawn_all(d, overwrite=True)
+
+    cit_text = durable_paths.citation_convention_path(d).read_text(encoding="utf-8")
+    cit = json.loads(cit_text)
+    if not cit["rules"]:
+        return _fail("citation rules not produced on the synthetic corpus")
+    for r in cit["rules"]:
+        if "examples" in r:
+            return _fail(f"citation rule still carries verbatim examples: {r}")
+        if "sample_count" not in r or "pattern" not in r:
+            return _fail("citation rule lost its useful pattern/count")
+    if "A/RES/70/1" in cit_text:
+        return _fail("verbatim citation token leaked into the citation store")
+
+    sit = durable_paths.situational_awareness_path(d).read_text(encoding="utf-8")
+    if "Council" not in sit:
+        return _fail("situational lost the institution category")
+    if "Security Council" in sit:
+        return _fail("verbatim institution NAME leaked into situational")
+    if planted in sit or "Bluebird" in sit or "12-345-6789" in sit:
+        return _fail("operator content span leaked into situational")
+
+    ling = durable_paths.linguistic_identity_path(d).read_text(encoding="utf-8")
+    if "Representative sentences" in ling:
+        return _fail("linguistic still emits verbatim representative sentences")
+    if planted in ling or "Bluebird" in ling or "12-345-6789" in ling:
+        return _fail("operator content span leaked into linguistic_identity")
+    return _ok("BOOT stores payload-free by construction: citation drops examples (pattern+count kept); "
+               "situational stores institution categories not names; linguistic drops quoted sentences; "
+               "no planted operator span in any store")
+
+
+def check_72_document_dates_payload_free_and_ingest():
+    """INFRA-041 P3: document_dates is payload-free (filename + date only; title-from-content,
+    abs_path, and the validation first-page excerpt are DROPPED on write, by construction). EXECUTED:
+    write_dates persists a projection; the dropped fields and a planted span are absent. Downstream:
+    the OGE Tier-1 ingest still BUILDS a Document node from the abstracted store. Tempdir, non-mutating."""
+    import tempfile
+    import document_dating, durable_paths, ontology_graph
+    d = Path(tempfile.mkdtemp(prefix="shimmer_p3_72_"))
+    excerpt = "first page secret text Bluebird"
+    records = [{"filename": "merger_x_2026.md", "date": "2026-01-01", "date_source": "filename",
+                "date_confidence": "high", "title": "Confidential Merger of AcmeCo and BetaCo",
+                "abs_path": "C:/Users/secret/input/merger_x_2026.md", "content_validated": True,
+                "validation_note": f"matched=['merger']; first_page_excerpt={excerpt!r}"}]
+    document_dating.write_dates(d, records)
+    raw = durable_paths.document_dates_path(d).read_text(encoding="utf-8")
+    stored = json.loads(raw)["documents"][0]
+    if "title" in stored or "abs_path" in stored or "validation_note" in stored:
+        return _fail(f"document_dates store still carries dropped fields: {list(stored)}")
+    for leak in ("Confidential Merger", "AcmeCo", "C:/Users/secret", "Bluebird", "first_page_excerpt"):
+        if leak in raw:
+            return _fail(f"operator content/path leaked into document_dates store: {leak!r}")
+    if stored.get("filename") != "merger_x_2026.md" or stored.get("date") != "2026-01-01":
+        return _fail("document_dates store lost its useful filename/date")
+    out = d / "graph.json"
+    g = ontology_graph.build_graph(sources={"document_dates": durable_paths.document_dates_path(d)},
+                                   out_path=str(out))
+    docnode = next((n for n in g["nodes"] if n["type"] == "Document" and n["id"] == "merger_x_2026.md"), None)
+    if not docnode:
+        return _fail("OGE ingest did not build a Document node from the abstracted store")
+    if docnode.get("title"):
+        return _fail("OGE Document node carries a title from the abstracted store (should be None)")
+    return _ok("document_dates payload-free (filename+date only; title/abs_path/excerpt dropped); "
+               "OGE ingest still builds a Document node (title None) from the abstracted store")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -2279,6 +2361,8 @@ CHECKS = [
     ("68 chokepoint 1 prompt egress masked (network) / exempt (qwen_local) (INFRA-041 P2)", check_68_chokepoint_prompt_masked),
     ("69 chokepoint 2 web query masked before egress (INFRA-041 P2)", check_69_chokepoint_query_masked),
     ("70 chokepoint 4 BOOT date-web suppressed under sensitive mode (INFRA-041 P2)", check_70_chokepoint_date_web_suppressed),
+    ("71 BOOT stores payload-free by construction (citation/situational/linguistic) (INFRA-041 P3)", check_71_boot_stores_payload_free),
+    ("72 document_dates payload-free + OGE ingest still builds (INFRA-041 P3)", check_72_document_dates_payload_free_and_ingest),
 ]
 
 
