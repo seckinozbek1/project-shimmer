@@ -55,6 +55,7 @@ from snapshot_manager import (
 )
 from orchestrator import OperatorDecision, TopOrchestrator
 from pipeline_amendment_validator import validate_amendment_payload
+import verifiability_gate
 from reference_builder import ReferenceIndex
 from sensitivity_layer.redaction_stage import run_redaction_phase
 import redaction_gate
@@ -621,6 +622,17 @@ async def phase_6_synthesis(orch, keys, op_docs, production, audit, conv_review,
     retrieval_mode = "semantic" if embed_store else "zipfian"
     print(f"[pipeline] phase 6 context retrieval mode: {retrieval_mode}",
           file=sys.stderr, flush=True)
+
+    # OPT-1 verifiability gate: a CONFIDENT positive affirmation that cites nothing is
+    # downgraded to UNCERTAIN via INFRA-037 supersession, before findings feed synthesis,
+    # the amendment drafter, and render. Operates on the canonical result wrappers that
+    # every _items_for/decode_items consumer reads (production: LEGAL_ANALYST; audit:
+    # FACT_CHECKER; conv_review: PRACTICE_AUDITOR). Flagged-and-kept, never dropped.
+    vg = verifiability_gate.apply_verifiability_gate(
+        (production or []) + (audit or []) + (conv_review or []))
+    if vg["downgraded"]:
+        print(f"[pipeline] verifiability gate: downgraded {vg['downgraded']} unverifiable "
+              f"affirmation(s) to UNCERTAIN", file=sys.stderr, flush=True)
 
     for doc in op_docs:
         # Findings first — they determine the topical scope for context_summary too.

@@ -2348,6 +2348,78 @@ def check_74_delta_proposals_masks_three():
                "mode, real under non-sensitive; dedup_key preserved for cross-run merge")
 
 
+def check_75_verifiability_gate():
+    """OPT-1: the verifiability gate downgrades a CONFIDENT positive affirmation that cites
+    nothing to UNCERTAIN via INFRA-037 supersession (flagged-and-kept), and never mis-fires.
+    EXECUTED coverage of all six cases plus idempotency. Pure in-memory, non-mutating."""
+    import verifiability_gate as VG
+    from agent_wrapper import decode_items
+
+    def wrap(agent, item):
+        return {"agent": agent, "ok": True, "doc_id": "d",
+                "parsed": {"agent": agent, "doc_id": "d", "items": [dict(item)]}}
+
+    def current(r):
+        return decode_items(r["parsed"])
+
+    base = {"item_id": "i1", "revision": 1, "ts": "t1", "confidence": "CONFIDENT", "kind": "finding"}
+
+    # 1. affirmative-no-grounding -> UNCERTAIN + revision+1 superseding item
+    r1 = wrap("LEGAL_ANALYST", {**base, "verdict": "GROUNDED", "ref": "", "ref_ids": []})
+    VG.apply_verifiability_gate([r1])
+    cur = current(r1)[0]
+    if not (cur.get("confidence") == "UNCERTAIN" and cur.get("uncertain") is True
+            and cur.get("unverifiable_reason") and cur.get("revision") == 2):
+        return _fail(f"case1: affirmation with no grounding not downgraded: {cur}")
+    if len(r1["parsed"]["items"]) != 2:
+        return _fail("case1: superseding revision+1 item not appended (original must remain as history)")
+    if "LEGAL_ANALYST" not in cur["unverifiable_reason"] or "GROUNDED" not in cur["unverifiable_reason"]:
+        return _fail("case1: unverifiable_reason must name the agent and verdict")
+
+    # 2. affirmative-with-REF -> pass unchanged, no new revision
+    r2 = wrap("LEGAL_ANALYST", {**base, "verdict": "GROUNDED", "ref": "", "ref_ids": ["REF-0001"]})
+    VG.apply_verifiability_gate([r2])
+    if len(r2["parsed"]["items"]) != 1 or current(r2)[0].get("confidence") != "CONFIDENT":
+        return _fail("case2: grounded affirmation must pass unchanged")
+
+    # 3. absence-with-context-REF (a fired-on verdict) -> not mis-flagged
+    r3 = wrap("PRACTICE_AUDITOR", {**base, "verdict": "VIOLATION", "kind": "absence",
+                                   "location": "document-level", "ref": "", "ref_ids": ["REF-0007"]})
+    VG.apply_verifiability_gate([r3])
+    if len(r3["parsed"]["items"]) != 1 or current(r3)[0].get("confidence") != "CONFIDENT":
+        return _fail("case3: valid absence finding with a context REF must not be mis-flagged")
+
+    # 4. extraction / tag -> untouched (agent not in the fire-set)
+    r4a = wrap("PROCESSOR", {**base, "kind": "extraction", "ref": "", "ref_ids": []})  # no verdict
+    r4b = wrap("SPEECH_ACT_TAGGER", {**base, "kind": "tag", "ref": "", "ref_ids": []})
+    VG.apply_verifiability_gate([r4a, r4b])
+    if len(r4a["parsed"]["items"]) != 1 or len(r4b["parsed"]["items"]) != 1:
+        return _fail("case4: extraction/tag must be untouched")
+
+    # 5. web-grounded affirmation -> pass (grounded via the cited web-source field)
+    r5 = wrap("FACT_CHECKER", {**base, "verdict": "CONFIRMED", "ref": "", "ref_ids": [],
+                               "source_url": "https://example.org/ruling"})
+    VG.apply_verifiability_gate([r5])
+    if len(r5["parsed"]["items"]) != 1 or current(r5)[0].get("confidence") != "CONFIDENT":
+        return _fail("case5: web-grounded affirmation must not be mis-flagged")
+
+    # 6. excluded self-hedging verdicts -> NOT fired on
+    r6a = wrap("LEGAL_ANALYST", {**base, "verdict": "THIN", "ref": "", "ref_ids": []})
+    r6b = wrap("FACT_CHECKER", {**base, "verdict": "DISPUTED", "ref": "", "ref_ids": []})
+    VG.apply_verifiability_gate([r6a, r6b])
+    if len(r6a["parsed"]["items"]) != 1 or len(r6b["parsed"]["items"]) != 1:
+        return _fail("case6: excluded self-hedging verdicts (THIN/DISPUTED) must not fire")
+
+    # idempotency: re-running the gate on the already-downgraded case1 makes no revision 3
+    VG.apply_verifiability_gate([r1])
+    if len(r1["parsed"]["items"]) != 2 or current(r1)[0].get("revision") != 2:
+        return _fail("idempotency: an already-downgraded item must not be downgraded again")
+
+    return _ok("verifiability gate: affirmation-no-REF -> UNCERTAIN (revision+1, reason names "
+               "agent/verdict); grounded/web-grounded/absence-with-context-REF pass; extraction/tag "
+               "and excluded verdicts (THIN/DISPUTED) untouched; idempotent")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -2433,6 +2505,7 @@ CHECKS = [
     ("72 document_dates payload-free + OGE ingest still builds (INFRA-041 P3)", check_72_document_dates_payload_free_and_ingest),
     ("73 graph.json masks Convention.rule + CitationForm.examples under sensitive (INFRA-041 P4)", check_73_graph_masks_cross_run_fields),
     ("74 delta_proposals masks evidence + trigger + proposed_change under sensitive (INFRA-041 P4)", check_74_delta_proposals_masks_three),
+    ("75 verifiability gate downgrades unverifiable affirmations to UNCERTAIN (OPT-1)", check_75_verifiability_gate),
 ]
 
 
