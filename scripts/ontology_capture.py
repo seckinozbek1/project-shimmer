@@ -174,15 +174,23 @@ def capture_proposals(proposals, run_id, *, sensitive, stores_dir=None):
         return list(existing.values())
     now = _now()
     for p in proposals:
-        key = _proposal_dedup_key(p)
+        key = _proposal_dedup_key(p)  # built from the RAW proposal so recurring proposals still merge
+        # INFRA-041 P4: the masked-write gate now covers all three content-bearing fields, not just
+        # evidence. proposed_change (the full change object) and trigger can quote source spans, so
+        # both are masked under sensitive mode (Q-audit cross-run gap). Reuses the existing B1
+        # mask_field / _mask_evidence (no second masker). The dedup_key is derived from the raw
+        # proposal's structural target/action/scope ids (no source span) so cross-run merge holds.
         masked_evidence = _mask_evidence(p.get("evidence"), sensitive=sensitive)
+        masked_change = mask_field(p.get("proposed_change"), "PROPOSAL_CHANGE", sensitive=sensitive)
+        masked_trigger = mask_field(p.get("trigger"), "PROPOSAL_TRIGGER", sensitive=sensitive)
         rec = existing.get(key)
         if rec is None:
             existing[key] = {
                 "node": "DeltaProposal",
                 "dedup_key": key,
                 "kind": p.get("kind"),                       # SAFE
-                "proposed_change": p.get("proposed_change"), # SAFE (target/action/scope ids)
+                "trigger": masked_trigger,                   # RAW -> masked under sensitive (P4)
+                "proposed_change": masked_change,            # RAW -> masked under sensitive (P4)
                 "evidence": masked_evidence,                 # RAW -> masked under sensitive
                 "occurrence_count": 1,
                 "first_seen": now,
@@ -196,6 +204,8 @@ def capture_proposals(proposals, run_id, *, sensitive, stores_dir=None):
             rec["last_seen"] = now
             rec["last_run_id"] = run_id
             rec["evidence"] = masked_evidence                # refresh to latest (masked) evidence
+            rec["proposed_change"] = masked_change           # refresh (masked under sensitive)
+            rec["trigger"] = masked_trigger                  # refresh (masked under sensitive)
             # status is preserved (the operator may have moved it past 'proposed')
     _rewrite_accumulator(proposals_store, existing)
     return list(existing.values())

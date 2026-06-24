@@ -1674,7 +1674,9 @@ def main(argv=None):
         # if the run was sensitive), so no new masking decision is introduced here. Best-effort: a
         # rebuild failure never fails a completed run (the graph is a derived artifact).
         try:
-            g = ontology_graph.build_graph()
+            # INFRA-041 P4: mask Convention.rule + CitationForm.examples under sensitive mode
+            # (sensitive = redaction_enabled, the established run signal; matches capture_run).
+            g = ontology_graph.build_graph(sensitive=redaction_enabled)
             print(f"[pipeline] OGE graph rebuilt: {g['stats']['nodes_total']} nodes, "
                   f"{g['stats']['edges_total']} edges", file=sys.stderr)
             # OGE GNN incremental update (build B3). Sequence: capture_run -> build_graph -> gnn.

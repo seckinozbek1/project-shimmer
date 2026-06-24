@@ -32,6 +32,11 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Reuse the EXISTING OGE masked-write gate (B1) -- not a second masker. INFRA-041 P4 closes the
+# cross-run leak gap: under sensitive mode Convention.rule (Q5) and CitationForm.examples (Q6) are
+# masked to typed placeholders, real content otherwise. mask_field is None-passthrough + [REDACTED:TYPE].
+from ontology_capture import mask_field
+
 ROOT = Path(__file__).resolve().parent.parent
 OGE_STORES_DIR = ROOT / "ontology" / "stores"
 
@@ -94,11 +99,16 @@ def _count_by(items, key):
     return out
 
 
-def build_graph(sources=None, out_path=None):
+def build_graph(sources=None, out_path=None, *, sensitive=False):
     """Build the Tier-1 graph from the durable sources and write graph.json. `sources` overrides
     individual source paths (the verify gate passes tempdir fixtures); `out_path` overrides the
     output (the gate writes to a tempdir, never the real ontology/stores/graph.json). Returns the
-    graph dict. Safe on empty inputs (produces a valid graph with whatever nodes exist)."""
+    graph dict. Safe on empty inputs (produces a valid graph with whatever nodes exist).
+
+    sensitive (INFRA-041 P4): masks the cross-run leak fields -- Convention.rule (Q5) and
+    CitationForm.examples (Q6) -- to typed placeholders, real content otherwise. Reuses the B1
+    mask_field gate (no second masker). Provision text is already masked AT THE SOURCE store by B1,
+    so build_graph never unmasks it; this closes the two fields build_graph itself reads raw."""
     src = dict(DEFAULT_SOURCES)
     if sources:
         src.update(sources)
@@ -130,7 +140,8 @@ def build_graph(sources=None, out_path=None):
         cid = c.get("id")
         if not cid:
             continue
-        add_node("Convention", cid, category=c.get("category"), rule=c.get("rule"),
+        add_node("Convention", cid, category=c.get("category"),
+                 rule=mask_field(c.get("rule"), "CONVENTION_RULE", sensitive=sensitive),  # Q5 (P4)
                  source_file=c.get("source_file"), source_location=c.get("source_location"),
                  severity=c.get("severity"), action=c.get("action"))
 
@@ -140,8 +151,11 @@ def build_graph(sources=None, out_path=None):
         nm = r.get("name")
         if not nm:
             continue
+        _ex = r.get("examples", []) or []
+        if sensitive and _ex:  # Q6 (P4): mask corpus-derived citation examples under sensitive mode
+            _ex = [mask_field("examples", "CITATION_EXAMPLES", sensitive=True)]
         add_node("CitationForm", nm, pattern=r.get("pattern"),
-                 sample_count=r.get("sample_count"), examples=r.get("examples", []) or [])
+                 sample_count=r.get("sample_count"), examples=_ex)
         citation_patterns.append((nm, _safe_compile(r.get("pattern"))))
 
     # SpeechAct nodes (id = name) + compiled EXHIBITS patterns
@@ -248,6 +262,7 @@ def build_graph(sources=None, out_path=None):
     graph = {
         "schema": "oge_graph/v1",
         "tier": 1,
+        "sensitive": bool(sensitive),  # P4: rule + citation examples masked when true
         "generated_at": _now(),
         "nodes": node_list,
         "edges": edges,

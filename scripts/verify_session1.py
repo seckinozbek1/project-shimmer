@@ -2280,6 +2280,74 @@ def check_72_document_dates_payload_free_and_ingest():
                "OGE ingest still builds a Document node (title None) from the abstracted store")
 
 
+def check_73_graph_masks_cross_run_fields():
+    """INFRA-041 P4: ontology_graph.build_graph masks the two cross-run leak fields under sensitive
+    mode -- Convention.rule (Q5) and CitationForm.examples (Q6) -- and carries real content under
+    non-sensitive. Reuses the B1 mask_field gate (no second masker). Tempdir, non-mutating."""
+    import tempfile
+    import ontology_graph
+    d = Path(tempfile.mkdtemp(prefix="shimmer_p4_73_"))
+    (d / "conv.json").write_text(json.dumps({"conventions": [
+        {"id": "CONV-001", "category": "confidentiality", "rule": "redact company turnover figures",
+         "source_file": "f.md", "source_location": "l1", "severity": "required", "action": "redact"}]}),
+        encoding="utf-8")
+    (d / "cit.json").write_text(json.dumps({"rules": [
+        {"name": "UN_RES", "pattern": r"[ASE]/RES/\d+", "sample_count": 3, "examples": ["A/RES/70/1"]}]}),
+        encoding="utf-8")
+    srcs = {"conventions": d / "conv.json", "citation_forms": d / "cit.json"}
+    g = ontology_graph.build_graph(sources=srcs, out_path=str(d / "s.json"), sensitive=True)
+    conv = next(n for n in g["nodes"] if n["type"] == "Convention")
+    cit = next(n for n in g["nodes"] if n["type"] == "CitationForm")
+    if conv["rule"] != "[REDACTED:CONVENTION_RULE]":
+        return _fail(f"Convention.rule not masked under sensitive: {conv['rule']!r}")
+    if cit["examples"] != ["[REDACTED:CITATION_EXAMPLES]"]:
+        return _fail(f"CitationForm.examples not masked under sensitive: {cit['examples']!r}")
+    raw = (d / "s.json").read_text(encoding="utf-8")
+    if "company turnover" in raw or "A/RES/70/1" in raw:
+        return _fail("raw rule/example leaked into graph.json under sensitive mode")
+    if g.get("sensitive") is not True:
+        return _fail("graph.json missing sensitive=true flag")
+    g2 = ontology_graph.build_graph(sources=srcs, out_path=str(d / "ns.json"), sensitive=False)
+    conv2 = next(n for n in g2["nodes"] if n["type"] == "Convention")
+    cit2 = next(n for n in g2["nodes"] if n["type"] == "CitationForm")
+    if conv2["rule"] != "redact company turnover figures" or cit2["examples"] != ["A/RES/70/1"]:
+        return _fail("non-sensitive graph must carry the real rule + examples")
+    return _ok("graph.json masks Convention.rule (Q5) + CitationForm.examples (Q6) under sensitive "
+               "mode, real content under non-sensitive; reuses the B1 mask_field gate")
+
+
+def check_74_delta_proposals_masks_three():
+    """INFRA-041 P4: the delta_proposals accumulator masks ALL THREE content-bearing fields under
+    sensitive mode -- evidence (already) + trigger + proposed_change (the gap) -- and keeps real
+    content under non-sensitive. dedup_key (structural ids) is preserved so cross-run merge holds.
+    Tempdir, non-mutating."""
+    import tempfile
+    import ontology_capture
+    d = Path(tempfile.mkdtemp(prefix="shimmer_p4_74_"))
+    prop = [{"kind": "refine_convention", "trigger": "recurring figure 12,000,000 EUR in REF-5",
+             "proposed_change": {"target": "CONV-001", "action": "tighten", "scope": "turnover",
+                                 "note": "company X turnover 12,000,000"},
+             "evidence": {"finding": "company X turnover 12,000,000 EUR"}}]
+    acc = ontology_capture.capture_proposals(prop, "R1", sensitive=True, stores_dir=str(d / "stores"))
+    rec = acc[0]
+    if rec.get("trigger") != "[REDACTED:PROPOSAL_TRIGGER]":
+        return _fail(f"trigger not masked under sensitive: {rec.get('trigger')!r}")
+    if rec.get("proposed_change") != "[REDACTED:PROPOSAL_CHANGE]":
+        return _fail(f"proposed_change not masked under sensitive: {rec.get('proposed_change')!r}")
+    if rec.get("evidence") != {"masked": "[REDACTED:FINDING_EVIDENCE]"}:
+        return _fail(f"evidence not masked under sensitive: {rec.get('evidence')!r}")
+    if "12,000,000" in json.dumps(acc, ensure_ascii=False) or "company X" in json.dumps(acc, ensure_ascii=False):
+        return _fail("raw span leaked into the proposal accumulator under sensitive mode")
+    acc2 = ontology_capture.capture_proposals(prop, "R1", sensitive=False, stores_dir=str(d / "stores2"))
+    rec2 = acc2[0]
+    if rec2.get("trigger") != "recurring figure 12,000,000 EUR in REF-5" or not isinstance(rec2.get("proposed_change"), dict):
+        return _fail("non-sensitive accumulator must carry the real trigger + proposed_change")
+    if rec2.get("dedup_key") != rec.get("dedup_key"):
+        return _fail("dedup_key must be identical regardless of sensitive mode (cross-run merge)")
+    return _ok("delta_proposals masks all three (evidence + trigger + proposed_change) under sensitive "
+               "mode, real under non-sensitive; dedup_key preserved for cross-run merge")
+
+
 def ast_parse_all_modules():
     bad = []
     for p in SCRIPTS.rglob("*.py"):
@@ -2363,6 +2431,8 @@ CHECKS = [
     ("70 chokepoint 4 BOOT date-web suppressed under sensitive mode (INFRA-041 P2)", check_70_chokepoint_date_web_suppressed),
     ("71 BOOT stores payload-free by construction (citation/situational/linguistic) (INFRA-041 P3)", check_71_boot_stores_payload_free),
     ("72 document_dates payload-free + OGE ingest still builds (INFRA-041 P3)", check_72_document_dates_payload_free_and_ingest),
+    ("73 graph.json masks Convention.rule + CitationForm.examples under sensitive (INFRA-041 P4)", check_73_graph_masks_cross_run_fields),
+    ("74 delta_proposals masks evidence + trigger + proposed_change under sensitive (INFRA-041 P4)", check_74_delta_proposals_masks_three),
 ]
 
 
