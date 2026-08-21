@@ -17,7 +17,7 @@
 # operational experience. By the tenth run, the system self-governs.
 #
 # WHAT SHIMMER IS NOT:
-# Not a chatbot. Not a RAG pipeline. Not a fixed-step processor.
+# Not a chatbot. Not an ordinary RAG pipeline. Not a fixed-step processor.
 # It is a constitutional deliberative swarm with institutional memory.
 
 ---
