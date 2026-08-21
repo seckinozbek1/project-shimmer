@@ -111,7 +111,7 @@ the source of truth for Law II enforcement.
 
 Store in config/agent_registry.json.
 
-### The 14 agents
+### The 18 agents
 
 | Agent | DOES | DOES NOT | Model |
 |-------|------|----------|-------|
@@ -125,10 +125,14 @@ Store in config/agent_registry.json.
 | INST_FINDER | Map topics to institutions, build institution registries | Draft correspondence, make policy judgments | Claude API |
 | CITATION_RESOLVER | Build cross-document reference graphs, map citation chains | Interpret citations (that is PROCESSOR), search external | Claude API |
 | SPEECH_ACT_TAGGER | Classify pragmatic intent of utterances, build speech act taxonomy | Make policy judgments from speech acts | Claude API |
-| REDACT_CLERK (T1-T2) | Apply tier 1-2 redaction (pattern-based PII, named entities) | Add content, make judgment calls on borderline cases | Qwen local |
-| REDACT_AUTHORITY (T3-T4) | Review and approve redaction decisions, adversarial re-identification testing | Draft, search, verify facts | Qwen local |
-| REDACT_GATE (T5) | Final existential gate — can any output be reconstructed to reveal redacted content? | Any function other than binary pass/fail on output safety | Qwen local |
+| REDACTOR | Apply the operator redaction rules to document spans (pattern-based PII, named entities); propose one redaction item per matched span | Add content, judge on its own what is sensitive (it applies operator rules) | Qwen local |
 | AMENDMENT_DRAFTER | Compile findings from PRACTICE_AUDITOR, STYLE_GUARDIAN, VERIFIER, FACT_CHECKER into a tracked-changes document, produce referenced margin comments, propose rephrased text per conventions | Invent findings, override convention rules, make value judgments beyond conventions, produce content without a reference citation | Claude API |
+| EDITOR_CLERK | Conduct senior editorial review of the assembled deliverable's substance and drafting; emit advisory observations, one per item, each with a verdict and a rationale | Modify the deliverable or the amendments master, gate whether the deliverable ships (advisory only), mask or detect PII, use the web | Claude API |
+| EDITOR_HEAD_OF_UNIT | Review an observation escalated from EDITOR_CLERK at provision-and-neighbors scope; confirm, override, or escalate the lower rank's verdict | Modify the deliverable or the amendments master, gate whether the deliverable ships (advisory only), mask or detect PII, use the web | Claude API |
+| EDITOR_HEAD_OF_SECTION | Review an observation escalated from EDITOR_HEAD_OF_UNIT at provision-and-neighbors scope; confirm, override, or escalate the lower rank's verdict | Modify the deliverable or the amendments master, gate whether the deliverable ships (advisory only), mask or detect PII, use the web | Claude API |
+| EDITOR_HEAD_OF_DEPARTMENT | Review whole-deliverable coherence on escalation from EDITOR_HEAD_OF_SECTION; confirm, override, or escalate the lower rank's verdict | Modify the deliverable or the amendments master, gate whether the deliverable ships (advisory only), mask or detect PII, use the web | GPT-4o |
+| EDITOR_DEPUTY_DG | Assess the necessity and proportionality of the deliverable's content on escalation from EDITOR_HEAD_OF_DEPARTMENT; confirm, override, or escalate the lower rank's verdict | Modify the deliverable or the amendments master, gate whether the deliverable ships (advisory only), mask or detect PII, use the web | GPT-4o |
+| EDITOR_DG | Decide the existential editorial question — whether the content is needed at all — when summoned as the highest rank; render the board's terminal verdict | Modify the deliverable or the amendments master, gate whether the deliverable ships (advisory only), mask or detect PII, use the web | GPT-4o |
 
 ### Agent activation
 
@@ -693,14 +697,10 @@ PHASE 7 — LEARN
   Constitution updated with new legislation.
 
 REDACTION — FINAL PASS, ALWAYS RUNS (pipeline phase 9; after synthesis, before persist; LAW-IV)
-  The three Qwen redaction agents (REDACT_CLERK proposes tier 1-2,
-  REDACT_AUTHORITY approves tier 3-4 + adversarial test, REDACT_GATE final
-  pass/fail) APPLY the operator redaction rules (LAW-IV's phrase "content marked
-  for redaction") to document/deliverable spans at the output boundary — they do
-  NOT judge sensitivity themselves (INFRA-038). The three redactors SHARE ONE
-  resident local model (module-level cache keyed by model_id, load-locked), so the
-  clerk->AUTHORITY->GATE ladder runs to completion instead of failing the third 7B
-  load on memory.
+  The local Qwen redactor (REDACTOR) APPLIES the operator redaction rules (LAW-IV's phrase "content marked
+  for redaction") to document/deliverable spans at the output boundary — it does
+  NOT judge sensitivity itself (INFRA-038). The redactor uses a resident local
+  model (module-level cache keyed by model_id, load-locked).
   OPERATOR-SOVEREIGNTY (no silent floor): redaction acts ONLY on compiled operator
   rules. There is NO engine-side default-categories floor — when no operator rule is
   in force the run HARD-STOPS with a conscious operator choice (supply a compiling
